@@ -1,6 +1,6 @@
 # Zeek MCP Protocol Support: Specification and Implementation Plan
 
-**Version:** 1.1
+**Version:** 1.2
 **Date:** November 26, 2025
 **Author:** Zeek Development Team
 **Document Type:** Planning Document for Zeek MCP Integration
@@ -1184,6 +1184,264 @@ else if ( c$mcp_state?$current_stream_id &&
 
 **Timeline:** 6-8 weeks
 
+### Phase 2.5: Performance Optimization (Critical for B&I Deployments)
+
+**Context:** In Break-and-Inspect (B&I) proxy deployments, Zeek visibility of HTTP traffic can increase dramatically compared to typical deployments where most HTTP is encrypted. Performance optimization is critical to handle high-volume HTTP parsing without dropping packets or impacting real-time analysis.
+
+**Objective:** Minimize performance impact of HTTP/MCP parsing for high-throughput scenarios
+
+**Key Optimization Areas:**
+
+#### 1. Early MCP Detection and Bypass
+
+**Problem:** Parsing all HTTP bodies as potential MCP is expensive
+
+**Solution:** Fast-path non-MCP traffic
+
+```zeek
+# Stage 1: Header-based detection (very fast)
+event http_header(c: connection, is_orig: bool, name: string, value: string)
+{
+    if ( name == "CONTENT-TYPE" ) {
+        if ( value == "application/json" )
+            c$http$potential_mcp = T;
+        else if ( value == "text/event-stream" )
+            c$http$potential_sse = T;
+    }
+}
+
+# Stage 2: Only inspect body if potential_mcp flag set
+event http_entity_data(c: connection, is_orig: bool, length: count, data: string)
+{
+    if ( ! c$http?$potential_mcp )
+        return;  # Fast bypass for images, videos, etc.
+
+    # Only regex-scan first 256 bytes for "jsonrpc"
+    if ( |data| > 0 && /\"jsonrpc\":\"2\.0\"/ in data[0:min(256, |data|)] )
+        c$http$is_mcp = T;
+}
+```
+
+**Performance Impact:** Avoids expensive JSON parsing for 99%+ of HTTP traffic
+
+#### 2. Content Decompression Plugin (C++ Implementation)
+
+**Problem:** Deflate/gzip decompression in Zeek script is slow and memory-intensive
+
+**Solution:** Native C++ plugin for decompression
+
+**Implementation Strategy:**
+
+```cpp
+// src/analyzer/protocol/http/decompression/HTTP_Decompression.h
+
+#pragma once
+
+#include <zlib.h>
+#include "zeek/plugin/Plugin.h"
+
+namespace zeek::analyzer::http {
+
+class DecompressionAnalyzer : public Analyzer {
+public:
+    enum Algorithm { NONE, GZIP, DEFLATE, BROTLI };
+
+    DecompressionAnalyzer(Connection* conn, Algorithm algo);
+    ~DecompressionAnalyzer() override;
+
+    // Streaming decompression (avoids buffering entire body)
+    void DeliverStream(int len, const u_char* data, bool is_orig) override;
+
+private:
+    Algorithm algorithm;
+    z_stream zlib_stream;
+    bool initialized;
+
+    // Security limits
+    static const size_t MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100MB
+    static const double MAX_COMPRESSION_RATIO = 1000.0;
+    size_t total_compressed = 0;
+    size_t total_decompressed = 0;
+
+    void CheckCompressionBomb();
+};
+
+} // namespace
+```
+
+**Security Hardening:**
+
+1. **Compression Bomb Protection:**
+   - Track compression ratio in real-time
+   - Abort if ratio > 1000:1 (configurable)
+   - Limit total decompressed size per connection
+
+2. **Resource Limits:**
+   - Maximum decompressed buffer size
+   - Memory pool with bounds checking
+   - Timeout for decompression operations
+
+3. **Fuzzing and Testing:**
+   - AFL/libFuzzer integration for zlib wrapper
+   - Known-bad inputs from security advisories
+   - Malformed compressed data handling
+
+**Performance Characteristics:**
+- **Streaming:** Decompresses chunks as they arrive (no full buffering)
+- **Zero-copy:** Where possible, decompress directly into Zeek buffers
+- **Early abort:** Stop on compression bomb detection
+
+#### 3. Selective JSON Parsing
+
+**Problem:** Full JSON parsing is expensive; MCP detection only needs partial parse
+
+**Two-Stage Approach:**
+
+**Stage 1: Fast Path (Regex-based)**
+```zeek
+# Quick check: Is this JSON-RPC?
+if ( /\"jsonrpc\":\"2\.0\"/ !in data )
+    return;  # Not JSON-RPC, skip
+
+# Extract method (lightweight)
+local method_match = find_last(data, /\"method\":\"([^\"]+)\"/);
+if ( method_match == "" )
+    return;  # Response or malformed
+
+# Check if it's an MCP method we care about
+if ( /^(tools|resources|prompts|sampling)\// !in method_match )
+    return;  # Not MCP, skip expensive parsing
+```
+
+**Stage 2: Full Parse (Only for confirmed MCP)**
+```zeek
+# Now worth the cost of full JSON parsing
+local msg = parse_json(data);
+# ... full MCP analysis
+```
+
+**Performance Impact:** Avoids JSON parsing for non-MCP JSON-RPC traffic (e.g., other protocols)
+
+#### 4. Configurable Content Capture Depth
+
+**Problem:** Capturing full prompt/resource content can be memory-intensive
+
+**Solution:** Tunable limits with smart defaults
+
+```zeek
+module MCP;
+
+## Performance tuning options
+
+# Maximum content to capture (0 = unlimited, risky)
+option max_content_capture_size = 1024 &redef;
+
+# Skip content capture for large responses
+option skip_capture_threshold = 100000;  # 100KB
+
+# Sampling: Only capture content for 1 in N requests
+option content_capture_sample_rate = 1;  # 1 = all, 10 = 10%, etc.
+
+# Fast-path: Skip MCP detection for small requests
+option min_mcp_body_size = 50;  # Bytes
+```
+
+**Adaptive Behavior:**
+```zeek
+event http_entity_data(c: connection, is_orig: bool, length: count, data: string)
+{
+    # Skip tiny bodies (can't be valid MCP)
+    if ( length < MCP::min_mcp_body_size )
+        return;
+
+    # Skip huge bodies (likely file transfer, not MCP)
+    if ( length > MCP::skip_capture_threshold ) {
+        # Still log metadata, just no content
+        # ...
+        return;
+    }
+
+    # Sampling for reduced load
+    if ( MCP::content_capture_sample_rate > 1 &&
+         c$uid_hash % MCP::content_capture_sample_rate != 0 )
+        return;
+
+    # Proceed with full analysis
+}
+```
+
+#### 5. Connection State Management
+
+**Problem:** State tables can grow unbounded in long-lived connections
+
+**Solution:** Aggressive cleanup with tunables
+
+```zeek
+# Limit pending requests per connection
+option max_pending_requests = 100 &redef;
+
+# Timeout for orphaned requests
+option request_timeout = 5min &redef;
+
+# Periodic cleanup
+global pending_request_cleanup: event();
+
+event pending_request_cleanup()
+{
+    local now = network_time();
+
+    for ( cid in active_mcp_connections ) {
+        local c = lookup_connection(cid);
+        if ( ! c?$mcp_state )
+            next;
+
+        # Clean up old pending requests
+        for ( id in c$mcp_state$pending ) {
+            local req = c$mcp_state$pending[id];
+            if ( now - req$ts > request_timeout ) {
+                req$timed_out = T;
+                Log::write(MCP::LOG, req);
+                delete c$mcp_state$pending[id];
+            }
+        }
+    }
+
+    schedule 1min { pending_request_cleanup() };
+}
+```
+
+#### 6. SSE Stream Optimization
+
+**Problem:** Long-lived SSE connections can accumulate state
+
+**Solution:** Windowed event tracking
+
+```zeek
+# Don't keep full history of SSE events
+option max_sse_events_tracked = 1000 &redef;
+
+# Use circular buffer for event IDs
+type SSEState: record {
+    event_ids: vector of string;  # Circular buffer
+    event_count: count;
+    write_index: count;
+};
+
+function track_sse_event(state: SSEState, event_id: string)
+{
+    if ( |state$event_ids| < max_sse_events_tracked ) {
+        state$event_ids += event_id;
+    } else {
+        # Overwrite oldest
+        state$event_ids[state$write_index] = event_id;
+        state$write_index = (state$write_index + 1) % max_sse_events_tracked;
+    }
+    ++state$event_count;
+}
+```
+
+**Timeline:** 3-4 weeks (parallel with Phase 2)
+
 ### Phase 3: Production Rollout
 
 **Objective:** Replace C++ HTTP analyzer with Spicy version
@@ -1580,23 +1838,192 @@ testing/btest/scripts/protocols/mcp/
 
 ### Performance Tests
 
-**Benchmarks:**
+**Critical for B&I Deployments:** Performance testing must include high-volume HTTP scenarios typical of break-and-inspect proxy deployments.
+
+**Test Scenarios:**
+
+#### 1. Baseline Comparison
 
 ```bash
 # Baseline: Current C++ HTTP
 zeek -r large-http-trace.pcap -b base/protocols/http
 
-# New: Spicy HTTP
+# New: Spicy HTTP (no MCP)
 zeek -r large-http-trace.pcap -b spicy/protocols/http
 
-# Compare: Memory, CPU, throughput
+# With MCP analyzer enabled
+zeek -r large-http-trace.pcap -b spicy/protocols/http base/protocols/mcp
+
+# Compare: Memory, CPU, throughput, packet drops
 ```
 
-**Acceptance Criteria:**
+#### 2. B&I Proxy Simulation
 
-- **Throughput:** >= 90% of C++ version
-- **Memory:** <= 110% of C++ version
-- **Latency:** < 5% increase in event processing time
+**High-Volume HTTP Test:**
+- **Trace:** 10GB+ PCAP with mixed HTTP traffic (80% non-MCP, 20% MCP)
+- **Compression:** 50% of bodies gzip-encoded (realistic B&I scenario)
+- **Connections:** 10,000+ concurrent connections
+- **Duration:** 1 hour of traffic
+
+**Metrics to Track:**
+```bash
+# CPU utilization
+perf stat -e cycles,instructions,cache-misses zeek -r bi-proxy.pcap
+
+# Memory profiling
+valgrind --tool=massif zeek -r bi-proxy.pcap
+ms_print massif.out.* | less
+
+# Packet capture stats
+zeek -r bi-proxy.pcap 2>&1 | grep "packets received\|packets dropped"
+
+# Event processing lag
+zeek -r bi-proxy.pcap --pseudo-realtime=1.0  # Real-time simulation
+```
+
+#### 3. MCP-Specific Load Testing
+
+**Pure MCP Traffic:**
+- **Test:** 100% MCP traffic with various operations
+- **Tools:** 40% of requests
+- **Resources:** 30% of requests
+- **Prompts:** 20% of requests
+- **Sampling:** 10% of requests
+
+**Measure:**
+- JSON parsing overhead
+- State table growth
+- Log write performance
+
+```bash
+# Generate synthetic MCP traffic
+python generate_mcp_pcap.py \
+    --tools 40 --resources 30 --prompts 20 --sampling 10 \
+    --duration 3600 --rate 1000  # 1000 req/sec for 1 hour
+
+zeek -r synthetic-mcp.pcap base/protocols/mcp
+```
+
+#### 4. Decompression Performance
+
+**Compression Bomb Resilience:**
+```bash
+# Test 1: Normal compressed data
+zeek -r gzip-normal.pcap
+
+# Test 2: High compression ratio (100:1)
+zeek -r gzip-high-ratio.pcap
+
+# Test 3: Compression bomb attempt (10000:1)
+zeek -r gzip-bomb.pcap  # Should abort gracefully
+
+# Measure:
+# - Decompression time per MB
+# - Memory usage during decompression
+# - Detection of compression bombs
+```
+
+**Streaming vs. Buffered:**
+```bash
+# Compare streaming (optimized) vs. full buffering
+zeek -r chunked-transfer.pcap  # Should use streaming
+
+# Measure peak memory:
+/usr/bin/time -v zeek -r chunked-transfer.pcap 2>&1 | grep "Maximum resident"
+```
+
+#### 5. Scalability Testing
+
+**Horizontal Scaling:**
+```bash
+# Single worker
+zeek -r bi-proxy.pcap
+
+# Cluster mode (4 workers)
+zeek -r bi-proxy.pcap --cluster=4
+
+# Measure scaling efficiency
+# Expected: 3.5x throughput with 4 workers (87.5% efficiency)
+```
+
+**Connection State Stress:**
+```bash
+# Many concurrent connections with MCP
+zeek -r 10k-concurrent-mcp.pcap
+
+# Monitor:
+# - State table size over time
+# - Memory growth rate
+# - Cleanup effectiveness
+```
+
+#### 6. Comparative Benchmarks
+
+**Against Other Tools:**
+```bash
+# Zeek (baseline)
+time zeek -r http-traffic.pcap base/protocols/http
+
+# Zeek + MCP
+time zeek -r http-traffic.pcap base/protocols/http base/protocols/mcp
+
+# Suricata (for reference)
+time suricata -r http-traffic.pcap -c suricata.yaml
+
+# Compare: Processing speed (packets/sec)
+```
+
+**Acceptance Criteria (Updated for B&I Context):**
+
+| Metric | Target | Rationale |
+|--------|--------|-----------|
+| **Throughput (HTTP-only)** | >= 95% of C++ | Minor regression acceptable |
+| **Throughput (HTTP+MCP)** | >= 85% of C++ HTTP | MCP overhead is additional feature |
+| **Memory (no MCP)** | <= 110% of C++ | Spicy may use more memory |
+| **Memory (with MCP)** | <= 150% of C++ HTTP | State tracking overhead |
+| **Packet drops (1Gbps)** | 0% | Must handle line rate |
+| **Packet drops (10Gbps)** | < 1% | With clustering |
+| **Latency (event processing)** | < 10% increase | Real-time constraint |
+| **JSON parse time** | < 1ms per message | For responsiveness |
+| **Decompression (gzip)** | > 500 MB/s | zlib performance |
+| **Compression bomb detection** | < 100ms | Fast abort |
+
+**Red Flags (Performance Failures):**
+
+- Packet drops on typical B&I traffic (< 1Gbps sustained)
+- Memory growth over time (leak)
+- CPU usage > 80% on single core (should parallelize)
+- Decompression slower than 100 MB/s
+- Failure to detect compression bombs
+- Event processing lag > 5 seconds
+
+**Performance Regression Testing:**
+
+```bash
+# Automated performance CI
+.github/workflows/performance-test.yml
+
+# Run on every PR affecting HTTP/MCP
+steps:
+  - name: Performance Benchmark
+    run: |
+      # Baseline
+      zeek -r perf-test.pcap > /dev/null
+
+      # Capture metrics
+      /usr/bin/time -v zeek -r perf-test.pcap 2> metrics.txt
+
+      # Compare to baseline (fail if > 10% regression)
+      python compare_performance.py metrics.txt baseline.txt
+```
+
+**Load Testing in Production-Like Environment:**
+
+Before production deployment:
+1. **Shadow mode:** Run new analyzer alongside C++ version, compare outputs
+2. **Canary deployment:** Enable on 10% of sensors, monitor for 1 week
+3. **Gradual rollout:** 25% → 50% → 100% over 1 month
+4. **Rollback plan:** Keep C++ version for quick revert if issues arise
 
 ### Regression Prevention
 
@@ -1605,7 +2032,234 @@ zeek -r large-http-trace.pcap -b spicy/protocols/http
 - GitHub Actions workflow
 - Run full test suite on every PR
 - Block merge if tests fail
-- Performance regression alerts
+- Performance regression alerts (>10% slowdown blocks merge)
+- Automated nightly performance benchmarks
+- Memory leak detection with valgrind
+
+---
+
+## Additional Performance Risks and Mitigations
+
+### Risk 1: JSON Parsing Becoming a Bottleneck
+
+**Scenario:** In heavy MCP traffic, parsing JSON for every request/response could saturate CPU
+
+**Indicators:**
+- `parse_json()` showing up in profiling as hot path
+- CPU utilization spikes during MCP-heavy periods
+- Event queue backlog growing
+
+**Mitigations:**
+
+1. **Fast-Path Filtering (already planned):**
+   - Only parse JSON if body contains `"jsonrpc"`
+   - Skip JSON parsing for non-MCP methods
+
+2. **Consider Native JSON Parser:**
+   - Option: C++ JSON parser plugin (rapidjson, simdjson)
+   - Benefit: 5-10x faster than Zeek script parsing
+   - Trade-off: More complex, needs security hardening
+
+3. **Lazy Parsing:**
+   - Extract only needed fields (method, id) initially
+   - Full parse only if detailed logging enabled
+   - Example: Use regex to extract `method` without full JSON parse
+
+4. **Parser Pool:**
+   - Pre-allocate JSON parser objects
+   - Reuse across connections
+   - Avoid allocation overhead
+
+**Benchmark Target:**
+- JSON parsing should not exceed 20% of total CPU time
+- If exceeded, consider native parser plugin
+
+### Risk 2: State Table Growth in Long-Lived Connections
+
+**Scenario:** B&I proxies often have very long-lived connections (hours/days) with MCP
+
+**Indicators:**
+- Memory usage grows linearly with uptime
+- `|pending| table size` warnings
+- Out-of-memory crashes on long-running sensors
+
+**Mitigations:**
+
+1. **Aggressive Timeouts (already planned):**
+   - 5-minute timeout for orphaned requests (configurable)
+   - Periodic cleanup every 1 minute
+
+2. **Connection-Level Limits:**
+   ```zeek
+   option max_mcp_requests_per_connection = 10000 &redef;
+
+   if ( c$mcp_state$trans_depth > max_mcp_requests_per_connection ) {
+       # Log warning
+       Reporter::conn_weird("MCP_excessive_requests", c);
+       # Reset state to prevent unbounded growth
+       delete c$mcp_state;
+   }
+   ```
+
+3. **LRU Eviction:**
+   - If pending table grows too large, evict oldest entries
+   - Log evicted requests as timed out
+
+4. **Monitoring:**
+   - Export metrics: `max_pending_size`, `avg_pending_size`
+   - Alert if sustained growth detected
+
+**Benchmark Target:**
+- Memory per connection should plateau after ~100 requests
+- No more than 100MB memory growth per 10,000 connections
+
+### Risk 3: Log Write Performance
+
+**Scenario:** High-volume MCP traffic generates massive log writes
+
+**Indicators:**
+- Log writing saturates disk I/O
+- Event processing lags behind packet capture
+- `Log::write()` shows in profiling
+
+**Mitigations:**
+
+1. **Buffered Logging:**
+   - Batch log writes (already Zeek default)
+   - Tune buffer size: `Log::default_rotation_interval`
+
+2. **Async Logging:**
+   - Use separate thread for log writing
+   - Zeek's logger framework already does this
+
+3. **Log Sampling (for extreme volume):**
+   ```zeek
+   option mcp_log_sample_rate = 1 &redef;  # 1 = all, 10 = 10%
+
+   # In log_write logic:
+   if ( mcp_log_sample_rate > 1 &&
+        request_counter % mcp_log_sample_rate != 0 )
+       return;  # Skip this log entry
+
+   Log::write(MCP::LOG, info);
+   ```
+
+4. **Remote Logging:**
+   - Stream logs to remote collector (Kafka, syslog)
+   - Offload I/O from sensor
+
+**Benchmark Target:**
+- Log writes should not cause >5% CPU usage
+- No event processing lag due to logging
+
+### Risk 4: Decompression Attack Surface
+
+**Scenario:** Malicious compressed data attempts to crash or DoS Zeek
+
+**Attack Vectors:**
+1. **Compression bombs:** 1KB → 10GB decompressed
+2. **Malformed zlib streams:** Trigger buffer overflows
+3. **Infinite decompression:** Never-ending compressed stream
+4. **Memory exhaustion:** Massive decompressed data
+
+**Mitigations (already planned, but emphasize):**
+
+1. **Compression Ratio Monitoring:**
+   ```cpp
+   void DecompressionAnalyzer::CheckCompressionBomb() {
+       double ratio = (double)total_decompressed / total_compressed;
+       if (ratio > MAX_COMPRESSION_RATIO) {
+           // Log weird, abort decompression
+           EmitWeird("HTTP_compression_bomb");
+           initialized = false;
+       }
+   }
+   ```
+
+2. **Size Limits:**
+   - Absolute max decompressed size: 100MB (configurable)
+   - Per-chunk limit: 10MB
+   - Timeout: Abort if decompression takes >5 seconds
+
+3. **Safe zlib Usage:**
+   - Use `inflateInit2()` with bounds
+   - Set `avail_out` to limited buffer
+   - Check return codes strictly
+
+4. **Fuzzing:**
+   - AFL fuzzing of decompression code
+   - Include zlib CVE test cases
+   - Continuous fuzzing in CI
+
+**Benchmark Target:**
+- Compression bomb detected within 100ms
+- No crashes on malformed data
+- Graceful degradation (skip decompression, log warning)
+
+### Risk 5: Spicy Grammar Performance
+
+**Scenario:** Spicy-generated code slower than hand-optimized C++
+
+**Indicators:**
+- Spicy HTTP >10% slower than C++ HTTP
+- Packet drops in high-load testing
+- Hot paths in generated Spicy code
+
+**Mitigations:**
+
+1. **Profile Spicy Code:**
+   ```bash
+   perf record zeek -r test.pcap base/protocols/http
+   perf report
+   # Identify hot spots in generated code
+   ```
+
+2. **Spicy Optimization Flags:**
+   - Use `--optimize` during Spicy compilation
+   - Consider `--enable-lto` for link-time optimization
+
+3. **Selective C++ Fallback:**
+   - If specific grammar rules are slow, replace with C++ helper
+   - Example: Complex header parsing → C++ function
+
+4. **Collaborate with Spicy Team:**
+   - Report performance issues
+   - Work on Spicy compiler optimizations
+
+5. **Conditional Features:**
+   - Disable expensive features in production
+   - Example: MIME parsing only if needed
+
+**Benchmark Target:**
+- Spicy HTTP within 5% of C++ HTTP performance
+- If not achievable, maintain C++ option
+
+### Risk 6: Memory Fragmentation
+
+**Scenario:** Long-running Zeek with MCP causes memory fragmentation
+
+**Indicators:**
+- Memory usage grows but `top` shows no leaks
+- Performance degrades over time
+- Heap fragmentation visible in valgrind
+
+**Mitigations:**
+
+1. **Memory Pools:**
+   - Use Zeek's object pools for frequently allocated structs
+   - Pre-allocate MCP::Info objects
+
+2. **Periodic Restarts:**
+   - Recommend sensor restarts every 7 days
+   - Document in deployment guide
+
+3. **Memory Allocator:**
+   - Consider jemalloc or tcmalloc
+   - Better fragmentation resistance
+
+**Benchmark Target:**
+- Memory should stabilize after 24 hours of runtime
+- <10% memory growth over 7 days
 
 ---
 
@@ -2109,5 +2763,6 @@ The result will be:
 
 **Document Version History:**
 
+- v1.2 (2025-11-26): Added comprehensive performance optimization section for B&I deployments, including decompression plugin design, early MCP detection, and 6 major performance risk mitigations
 - v1.1 (2025-11-26): Added optional content capture fields and comprehensive privacy/security guidance
 - v1.0 (2025-11-26): Initial specification
