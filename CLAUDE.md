@@ -108,6 +108,52 @@ Adding MCP (Model Context Protocol) support to Zeek network security monitoring 
 - **Security hardening** - Consider attack scenarios (compression bombs, etc.)
 - **Follow Zeek conventions** - Study existing analyzers before proposing new patterns
 
+## Building Zeek
+
+### Prerequisites (macOS with Homebrew)
+
+The system may have outdated versions of build tools. Use Homebrew versions instead:
+
+```bash
+brew install cmake bison flex zeromq
+```
+
+### Build Environment
+
+**IMPORTANT**: Must use Homebrew versions of cmake, bison, and flex (not system versions):
+
+```bash
+export PATH="/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH"
+export CPPFLAGS="-I/opt/homebrew/opt/flex/include"
+export LDFLAGS="-L/opt/homebrew/opt/flex/lib"
+```
+
+### Build Commands
+
+```bash
+# Initialize submodules (first time only):
+git submodule update --recursive --init
+
+# Configure:
+PATH=/opt/homebrew/opt/bison/bin:/opt/homebrew/opt/flex/bin:/opt/homebrew/bin:$PATH \
+  CPPFLAGS="-I/opt/homebrew/opt/flex/include" \
+  LDFLAGS="-L/opt/homebrew/opt/flex/lib" \
+  ./configure --prefix=/Users/dgregor/git/zeek/build/install --enable-debug
+
+# Build (use -j for parallel builds):
+cd build && make -j8
+
+# Run tests:
+cd testing && make test
+```
+
+### Common Issues
+
+- **CMake too old**: System cmake is 3.4.1, needs 3.15+. Solution: Use Homebrew cmake
+- **Bison too old**: System bison is 2.3, needs 2.5+. Solution: Use Homebrew bison (keg-only)
+- **Flex headers missing**: Spicy needs flex include files. Solution: `brew install flex` and set CPPFLAGS
+- **Missing ZeroMQ**: Required for cluster backend. Solution: `brew install zeromq`
+
 ## Session Continuity
 
 This file ensures that important working conventions persist across Claude Code sessions. When starting a new session, Claude should read this file to understand:
@@ -115,3 +161,4 @@ This file ensures that important working conventions persist across Claude Code 
 2. Project goals and technical approach
 3. Key design decisions already made
 4. Preferred working style
+5. How to build Zeek with correct dependencies
