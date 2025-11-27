@@ -495,6 +495,27 @@ Based on analysis of current HTTP analyzer (src/analyzer/protocol/http/HTTP.cc) 
 
 **Purpose:** Track MCP protocol interactions at the JSON-RPC level
 
+**Design Decision: Request/Response Correlation**
+
+Following Zeek's HTTP logging pattern, MCP uses **combined request/response logging** where a single log entry represents a complete transaction. This approach:
+- Mirrors HTTP's design (request method + response status in one record)
+- Simplifies analysis (no need to join separate log files)
+- Handles pipelining naturally (like HTTP's `trans_depth`)
+- Works well with JSON-RPC's request/response ID matching
+
+**Alternative Considered:** Separate request and response log entries correlated by `msg_id`. This was rejected because:
+- Increases log volume (2x entries per transaction)
+- Requires post-processing to correlate request/response pairs
+- Doesn't handle notifications (no response) well
+- Diverges from Zeek conventions
+
+**How Correlation Works:**
+
+1. **Requests with Responses:** Request fields populated immediately, response fields filled when response arrives, then logged
+2. **Notifications:** No response expected, logged immediately with response fields unset
+3. **Multiple Responses (SSE):** First response completes the log entry, subsequent responses logged as separate entries with same `parent_msg_id`
+4. **Orphaned Requests:** If response never arrives (connection closed), logged with `timed_out=T`
+
 **Schema:**
 
 ```zeek
@@ -520,15 +541,8 @@ export {
         OTHER,
     };
 
-    type MessageType: enum {
-        REQUEST,
-        RESPONSE,
-        NOTIFICATION,
-        ERROR,
-    };
-
     type Info: record {
-        ## Timestamp of the message
+        ## Timestamp when request was sent
         ts: time &log;
 
         ## Connection UID from HTTP
@@ -537,23 +551,22 @@ export {
         ## Connection 4-tuple
         id: conn_id &log;
 
-        ## Direction: T=client→server, F=server→client
-        is_orig: bool &log;
+        ## Transaction depth (for pipelining/parallel requests)
+        trans_depth: count &log &default=0;
 
         ## JSON-RPC version (should be "2.0")
         jsonrpc_version: string &log &optional;
 
-        ## Message type (request/response/notification/error)
-        msg_type: MessageType &log;
+        ## JSON-RPC message ID (for correlation)
+        msg_id: count &log &optional;
+
+        ## --- REQUEST FIELDS ---
 
         ## MCP method category
         method: MethodType &log &optional;
 
         ## Full method name (e.g., "tools/call")
         method_name: string &log &optional;
-
-        ## JSON-RPC message ID (if present)
-        msg_id: count &log &optional;
 
         ## For tool calls: tool name
         tool_name: string &log &optional;
@@ -570,26 +583,57 @@ export {
         ## For sampling: model name
         model: string &log &optional;
 
+        ## Request message size (bytes)
+        request_size: count &log &default=0;
+
+        ## --- RESPONSE FIELDS ---
+
+        ## Whether this was a notification (no response expected)
+        is_notification: bool &log &default=F;
+
+        ## Whether response was received
+        has_response: bool &log &default=F;
+
+        ## Response status: "success", "error", or "timeout"
+        response_status: string &log &optional;
+
         ## For errors: error code
         error_code: int &log &optional;
 
-        ## For errors: error message
+        ## For errors: error message (truncated)
         error_message: string &log &optional;
 
-        ## Size of JSON-RPC message (bytes)
-        msg_size: count &log &default=0;
+        ## Response message size (bytes)
+        response_size: count &log &default=0;
 
-        ## Hash of full message (for deduplication)
-        msg_hash: string &log &optional;
+        ## Time from request to response
+        response_time: interval &log &optional;
 
-        ## Progressive notification token (if applicable)
-        progress_token: string &log &optional;
-
-        ## SSE event ID (for correlation and resumption tracking)
+        ## SSE event ID (if response came via SSE)
         sse_event_id: string &log &optional;
 
-        ## Response time (for requests with responses)
-        response_time: interval &log &optional;
+        ## --- SPECIAL CASES ---
+
+        ## For SSE streams with multiple responses: ID of first message
+        parent_msg_id: count &log &optional;
+
+        ## Whether this request timed out (no response before connection close)
+        timed_out: bool &log &default=F;
+
+        ## Progressive notification token (for progress updates)
+        progress_token: string &log &optional;
+
+        ## Progress value (for progress notifications)
+        progress_value: count &log &optional;
+        progress_total: count &log &optional;
+    };
+
+    ## State tracking for request/response correlation
+    type State: record {
+        ## Pending requests awaiting responses
+        pending: table[count] of Info;
+        ## Transaction depth counter
+        trans_depth: count &default=0;
     };
 }
 ```
@@ -666,19 +710,57 @@ type Info: record {
 
 ### Example Log Entries
 
-**mcp.log - Tool Invocation:**
+**mcp.log - Successful Tool Invocation (Request + Response):**
 ```
 ts=1732600000.123456 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
-is_orig=T jsonrpc_version=2.0 msg_type=REQUEST method=TOOLS_CALL
-method_name=tools/call msg_id=42 tool_name=execute_query
-tool_args={"database":"production","query":"SELECT..."}[truncated] msg_size=1024
+trans_depth=1 jsonrpc_version=2.0 msg_id=42 method=TOOLS_CALL method_name=tools/call
+tool_name=execute_query tool_args={"database":"production","query":"SELECT..."}[truncated]
+request_size=1024 is_notification=F has_response=T response_status=success
+response_size=2048 response_time=0.333s sse_event_id=evt-12345 timed_out=F
 ```
 
-**mcp.log - Response:**
+**mcp.log - Notification (No Response):**
 ```
-ts=1732600000.456789 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
-is_orig=F jsonrpc_version=2.0 msg_type=RESPONSE msg_id=42 msg_size=2048
-response_time=0.333s sse_event_id=evt-12345
+ts=1732600000.500000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=2 jsonrpc_version=2.0 method=NOTIFICATIONS_PROGRESS
+method_name=notifications/progress request_size=256 is_notification=T has_response=F
+progress_token=task-abc123 progress_value=50 progress_total=100 timed_out=F
+```
+
+**mcp.log - Error Response:**
+```
+ts=1732600000.750000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=3 jsonrpc_version=2.0 msg_id=43 method=RESOURCES_READ
+method_name=resources/read resource_uri=file:///etc/passwd request_size=512
+is_notification=F has_response=T response_status=error error_code=-32001
+error_message="Access denied to resource" response_size=128 response_time=0.050s timed_out=F
+```
+
+**mcp.log - Timed Out (No Response Received):**
+```
+ts=1732600001.000000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=4 jsonrpc_version=2.0 msg_id=44 method=TOOLS_CALL
+method_name=tools/call tool_name=slow_operation request_size=2048 is_notification=F
+has_response=F timed_out=T
+```
+
+**mcp.log - Multiple SSE Responses (Streaming):**
+```
+# First response (completes the transaction)
+ts=1732600002.000000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=5 jsonrpc_version=2.0 msg_id=45 method=SAMPLING_CREATE_MESSAGE
+method_name=sampling/createMessage model=claude-3-5-sonnet request_size=4096
+is_notification=F has_response=T response_status=success response_size=1024
+response_time=0.200s sse_event_id=evt-20001 timed_out=F
+
+# Subsequent streaming responses (linked via parent_msg_id)
+ts=1732600002.100000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=6 jsonrpc_version=2.0 parent_msg_id=45 response_status=success
+response_size=512 sse_event_id=evt-20002
+
+ts=1732600002.150000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=7 jsonrpc_version=2.0 parent_msg_id=45 response_status=success
+response_size=512 sse_event_id=evt-20003
 ```
 
 **mcp_sse.log:**
@@ -687,6 +769,137 @@ ts=1732600000.000000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:
 is_orig=F event_count=15 last_event_id=evt-12345 duration=10.5s
 clean_close=T total_bytes=32768 reconnect_count=0
 ```
+
+### Implementation Details: Request/Response Correlation
+
+**Connection-Level State Tracking:**
+
+Similar to HTTP's approach (see `scripts/base/protocols/http/main.zeek:93-104`), MCP maintains state per connection:
+
+```zeek
+# Added to connection record
+redef record connection += {
+    mcp: MCP::Info &optional;
+    mcp_state: MCP::State &optional;
+};
+```
+
+**Event Handler Flow:**
+
+```zeek
+# When request is seen
+event mcp_json_rpc_message(c: connection, is_orig: bool, data: string)
+{
+    local msg = parse_json(data);
+
+    if ( msg?$method ) {
+        # This is a REQUEST or NOTIFICATION
+        if ( ! c?$mcp_state ) {
+            local s: MCP::State;
+            c$mcp_state = s;
+        }
+
+        # Create new Info record
+        local info: MCP::Info;
+        info$ts = network_time();
+        info$uid = c$uid;
+        info$id = c$id;
+        info$trans_depth = ++c$mcp_state$trans_depth;
+        info$msg_id = msg?$id ? msg$id : 0;
+        info$method_name = msg$method;
+        # ... populate request fields ...
+
+        if ( msg?$id ) {
+            # This is a REQUEST - store for later response matching
+            c$mcp_state$pending[msg$id] = info;
+            c$mcp = info;  # Make accessible to other events
+        } else {
+            # This is a NOTIFICATION - log immediately
+            info$is_notification = T;
+            Log::write(MCP::LOG, info);
+        }
+    }
+    else if ( msg?$result || msg?$error ) {
+        # This is a RESPONSE
+        local id = msg$id;
+
+        if ( id in c$mcp_state$pending ) {
+            # Found matching request
+            local req_info = c$mcp_state$pending[id];
+
+            # Fill in response fields
+            req_info$has_response = T;
+            req_info$response_time = network_time() - req_info$ts;
+            req_info$response_size = |data|;
+
+            if ( msg?$result ) {
+                req_info$response_status = "success";
+            } else {
+                req_info$response_status = "error";
+                req_info$error_code = msg$error$code;
+                req_info$error_message = msg$error$message;
+            }
+
+            # Log complete transaction
+            Log::write(MCP::LOG, req_info);
+
+            # Remove from pending
+            delete c$mcp_state$pending[id];
+        }
+        # else: orphaned response (request not seen or already logged)
+    }
+}
+
+# On connection close, log any orphaned requests
+event connection_state_remove(c: connection)
+{
+    if ( ! c?$mcp_state )
+        return;
+
+    # Log all pending requests as timed out
+    for ( id in c$mcp_state$pending ) {
+        local info = c$mcp_state$pending[id];
+        info$timed_out = T;
+        Log::write(MCP::LOG, info);
+    }
+}
+```
+
+**SSE Streaming Responses:**
+
+For SSE streams where multiple responses arrive for a single request (e.g., streaming completion):
+
+```zeek
+# First response completes the original transaction
+# Subsequent responses create new log entries with parent_msg_id
+
+if ( id in c$mcp_state$pending ) {
+    # First response
+    local req_info = c$mcp_state$pending[id];
+    # ... fill fields and log ...
+    delete c$mcp_state$pending[id];
+
+    # Store msg_id for linking subsequent responses
+    c$mcp_state$current_stream_id = id;
+}
+else if ( c$mcp_state?$current_stream_id &&
+          c$mcp_state$current_stream_id == id ) {
+    # Subsequent streaming response
+    local stream_info: MCP::Info;
+    stream_info$ts = network_time();
+    stream_info$parent_msg_id = id;
+    # ... populate response fields only ...
+    Log::write(MCP::LOG, stream_info);
+}
+```
+
+**Advantages of This Approach:**
+
+1. **Analysis Simplicity:** Query logs with SQL/Splunk/etc. without joining
+2. **Performance:** Single log write per transaction (vs. 2 for separate approach)
+3. **Completeness:** Easy to identify incomplete transactions (`has_response=F`)
+4. **Consistency:** Matches Zeek's HTTP, DNS, and other protocol analyzers
+5. **Streaming Support:** `parent_msg_id` links multi-response scenarios
 
 ---
 
