@@ -2,7 +2,8 @@
 
 **Version:** 1.0
 **Date:** November 26, 2025
-**Author:** Planning Document for Zeek MCP Integration
+**Author:** Zeek Development Team
+**Document Type:** Planning Document for Zeek MCP Integration
 
 ---
 
@@ -70,25 +71,25 @@ As AI systems become increasingly integrated into enterprise environments, netwo
 Zeek's architecture consists of:
 
 ```
-┌─────────────────────────────────────────────┐
-│           Zeek Script Layer                 │
-│  (Event handlers, logging, policies)        │
-└─────────────────────────────────────────────┘
-                    ▲
-                    │ Events
-                    │
-┌─────────────────────────────────────────────┐
-│        Protocol Analyzers Layer             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-│  │   HTTP   │  │   DNS    │  │   SSL    │  │
-│  │ (C/C++)  │  │ (C/C++)  │  │ (Spicy)  │  │
-│  └──────────┘  └──────────┘  └──────────┘  │
-└─────────────────────────────────────────────┘
-                    ▲
-                    │
-┌─────────────────────────────────────────────┐
-│       Packet Analysis & TCP Reassembly      │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│            Zeek Script Layer                 │
+│   (Event handlers, logging, policies)        │
+└──────────────────────────────────────────────┘
+                     ▲
+                     │ Events
+                     │
+┌──────────────────────────────────────────────┐
+│         Protocol Analyzers Layer             │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│   │   HTTP   │  │   DNS    │  │   SSL    │  │
+│   │ (C/C++)  │  │ (C/C++)  │  │ (Spicy)  │  │
+│   └──────────┘  └──────────┘  └──────────┘  │
+└──────────────────────────────────────────────┘
+                     ▲
+                     │
+┌──────────────────────────────────────────────┐
+│        Packet Analysis & TCP Reassembly      │
+└──────────────────────────────────────────────┘
 ```
 
 ### Current HTTP Implementation
@@ -225,8 +226,8 @@ testing/btest/Baseline/
 MCP defines a client-server architecture for AI system integration:
 
 ```
-┌─────────────────┐         JSON-RPC          ┌─────────────────┐
-│   MCP Client    │◄──────over HTTP/SSE──────►│   MCP Server    │
+┌─────────────────┐       JSON-RPC over       ┌─────────────────┐
+│   MCP Client    │◄─────── HTTP/SSE ────────►│   MCP Server    │
 │  (AI Assistant) │                            │ (Data Source)   │
 └─────────────────┘                            └─────────────────┘
         │                                               │
