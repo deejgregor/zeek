@@ -1184,9 +1184,15 @@ else if ( c$mcp_state?$current_stream_id &&
 
 **Timeline:** 6-8 weeks
 
-### Phase 2.5: Performance Optimization (Critical for B&I Deployments)
+### Phase 2.5: Performance Optimization (Critical for High-Visibility Deployments)
 
-**Context:** In Break-and-Inspect (B&I) proxy deployments, Zeek visibility of HTTP traffic can increase dramatically compared to typical deployments where most HTTP is encrypted. Performance optimization is critical to handle high-volume HTTP parsing without dropping packets or impacting real-time analysis.
+**Context:** In deployments with TLS Inspection (TLSI) proxies or TLS termination points, Zeek visibility of HTTP traffic can increase dramatically compared to typical deployments where most HTTP is encrypted. Performance optimization is critical to handle high-volume HTTP parsing without dropping packets or impacting real-time analysis.
+
+**Common High-Visibility Deployment Scenarios:**
+- **TLSI Proxies:** Zscaler, Palo Alto, Cisco WSA decrypting enterprise traffic
+- **Cloud Load Balancers:** AWS ALB, GCP Load Balancer, Azure Application Gateway with TLS termination
+- **Reverse Proxies:** nginx, HAProxy, Envoy handling TLS at the edge
+- **Development Environments:** Unencrypted local/staging servers
 
 **Objective:** Minimize performance impact of HTTP/MCP parsing for high-throughput scenarios
 
@@ -1838,7 +1844,7 @@ testing/btest/scripts/protocols/mcp/
 
 ### Performance Tests
 
-**Critical for B&I Deployments:** Performance testing must include high-volume HTTP scenarios typical of break-and-inspect proxy deployments.
+**Critical for High-Visibility Deployments:** Performance testing must include high-volume HTTP scenarios typical of TLS inspection proxies, TLS termination points, and development environments where Zeek has full visibility into HTTP traffic.
 
 **Test Scenarios:**
 
@@ -1857,28 +1863,29 @@ zeek -r large-http-trace.pcap -b spicy/protocols/http base/protocols/mcp
 # Compare: Memory, CPU, throughput, packet drops
 ```
 
-#### 2. B&I Proxy Simulation
+#### 2. High-Visibility Deployment Simulation
 
 **High-Volume HTTP Test:**
 - **Trace:** 10GB+ PCAP with mixed HTTP traffic (80% non-MCP, 20% MCP)
-- **Compression:** 50% of bodies gzip-encoded (realistic B&I scenario)
+- **Compression:** 50% of bodies gzip-encoded (realistic TLSI/LB scenario)
 - **Connections:** 10,000+ concurrent connections
 - **Duration:** 1 hour of traffic
+- **Scenarios:** TLSI proxy traffic, load balancer backend traffic, dev environment
 
 **Metrics to Track:**
 ```bash
 # CPU utilization
-perf stat -e cycles,instructions,cache-misses zeek -r bi-proxy.pcap
+perf stat -e cycles,instructions,cache-misses zeek -r high-visibility.pcap
 
 # Memory profiling
-valgrind --tool=massif zeek -r bi-proxy.pcap
+valgrind --tool=massif zeek -r high-visibility.pcap
 ms_print massif.out.* | less
 
 # Packet capture stats
-zeek -r bi-proxy.pcap 2>&1 | grep "packets received\|packets dropped"
+zeek -r high-visibility.pcap 2>&1 | grep "packets received\|packets dropped"
 
 # Event processing lag
-zeek -r bi-proxy.pcap --pseudo-realtime=1.0  # Real-time simulation
+zeek -r high-visibility.pcap --pseudo-realtime=1.0  # Real-time simulation
 ```
 
 #### 3. MCP-Specific Load Testing
@@ -1973,7 +1980,7 @@ time suricata -r http-traffic.pcap -c suricata.yaml
 # Compare: Processing speed (packets/sec)
 ```
 
-**Acceptance Criteria (Updated for B&I Context):**
+**Acceptance Criteria (Updated for High-Visibility Deployments):**
 
 | Metric | Target | Rationale |
 |--------|--------|-----------|
@@ -1981,7 +1988,7 @@ time suricata -r http-traffic.pcap -c suricata.yaml
 | **Throughput (HTTP+MCP)** | >= 85% of C++ HTTP | MCP overhead is additional feature |
 | **Memory (no MCP)** | <= 110% of C++ | Spicy may use more memory |
 | **Memory (with MCP)** | <= 150% of C++ HTTP | State tracking overhead |
-| **Packet drops (1Gbps)** | 0% | Must handle line rate |
+| **Packet drops (1Gbps)** | 0% | Must handle line rate (TLSI/LB) |
 | **Packet drops (10Gbps)** | < 1% | With clustering |
 | **Latency (event processing)** | < 10% increase | Real-time constraint |
 | **JSON parse time** | < 1ms per message | For responsiveness |
@@ -1990,7 +1997,7 @@ time suricata -r http-traffic.pcap -c suricata.yaml
 
 **Red Flags (Performance Failures):**
 
-- Packet drops on typical B&I traffic (< 1Gbps sustained)
+- Packet drops on typical TLSI/TLS termination traffic (< 1Gbps sustained)
 - Memory growth over time (leak)
 - CPU usage > 80% on single core (should parallelize)
 - Decompression slower than 100 MB/s
@@ -2076,7 +2083,7 @@ Before production deployment:
 
 ### Risk 2: State Table Growth in Long-Lived Connections
 
-**Scenario:** B&I proxies often have very long-lived connections (hours/days) with MCP
+**Scenario:** TLSI proxies and load balancers often have very long-lived connections (hours/days) with MCP
 
 **Indicators:**
 - Memory usage grows linearly with uptime
@@ -2520,9 +2527,10 @@ data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"World"
 **Deployment Context:**
 
 Zeek will only see unencrypted MCP traffic in specific deployment scenarios:
-- Break-and-inspect TLS proxy environments
-- Positioned after TLS termination (e.g., behind load balancer/reverse proxy)
-- Local monitoring of unencrypted development/testing servers
+- **TLS Inspection (TLSI) proxies:** Enterprise security proxies that decrypt/inspect/re-encrypt traffic (Zscaler, Palo Alto, etc.)
+- **TLS termination points:** Load balancers or reverse proxies handling TLS, with Zeek monitoring backend traffic
+- **Development/testing environments:** Unencrypted servers during development
+- **Internal service mesh:** Microservices communicating over unencrypted HTTP within trusted networks
 
 In these contexts, Zeek already has access to the full HTTP content, so the primary concerns are:
 1. **What to log** for security/analysis purposes
@@ -2593,7 +2601,7 @@ In these contexts, Zeek already has access to the full HTTP content, so the prim
 - **Optional:** `capture_resource_preview = T` enables truncated preview
 - **Always log:** `resource_content_size` for volumetric analysis
 - **Forensics:** Resource URI + timestamp allows reconstruction if source preserved
-- **Note:** In break-and-inspect scenarios, full content is already visible to security team
+- **Note:** In TLSI/TLS termination scenarios, full content is already visible to security team
 
 **3. Resource URIs**
 - **Risk:** URIs themselves may reveal architecture (`database://prod-mysql-01/users`)
@@ -2763,6 +2771,6 @@ The result will be:
 
 **Document Version History:**
 
-- v1.2 (2025-11-26): Added comprehensive performance optimization section for B&I deployments, including decompression plugin design, early MCP detection, and 6 major performance risk mitigations
+- v1.2 (2025-11-26): Added comprehensive performance optimization section for high-visibility deployments (TLSI proxies, TLS termination, dev environments), including decompression plugin design, early MCP detection, and 6 major performance risk mitigations. Clarified terminology from "B&I" to "TLSI/TLS termination" for broader accuracy.
 - v1.1 (2025-11-26): Added optional content capture fields and comprehensive privacy/security guidance
 - v1.0 (2025-11-26): Initial specification
