@@ -1,6 +1,6 @@
 # Zeek MCP Protocol Support: Specification and Implementation Plan
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** November 26, 2025
 **Author:** Zeek Development Team
 **Document Type:** Planning Document for Zeek MCP Integration
@@ -19,7 +19,17 @@
 8. [MCP Protocol Implementation Plan](#mcp-protocol-implementation-plan)
 9. [Testing Strategy](#testing-strategy)
 10. [Timeline and Milestones](#timeline-and-milestones)
-11. [References](#references)
+11. [AI-Assisted Development Estimates](#ai-assisted-development-estimates)
+12. [References](#references)
+
+---
+
+## Version History
+
+- **v1.3** (2025-11-26): Added AI-assisted development estimates including token budgets, human time, wall clock time, detailed breakdowns, session planning, and cost analysis
+- **v1.2** (2025-11-26): Updated terminology from "B&I proxies" to "TLSI/TLS termination" to cover broader deployment scenarios
+- **v1.1** (2025-11-26): Added optional content capture fields and comprehensive privacy/security guidance
+- **v1.0** (2025-11-26): Initial specification with combined request/response logging, performance optimization, and complete implementation plan
 
 ---
 
@@ -2377,6 +2387,266 @@ HTTP Spicy Grammar → HTTP Testing → HTTP Production
 **Risk 4: Community resistance to HTTP migration**
 - **Mitigation:** Long deprecation period
 - **Option:** Maintain both analyzers long-term
+
+---
+
+## AI-Assisted Development Estimates
+
+This section provides estimates for development with AI assistance (Claude Code or similar). These complement the human-only estimates in the Timeline section above.
+
+### Methodology
+
+AI-assisted development estimates consider:
+- **Token consumption** for context and generation
+- **Human time** for review, testing, and iteration
+- **Wall clock time** including AI generation, human feedback cycles, and testing
+- **Iteration cycles** typical for AI-generated code quality
+
+**Assumptions:**
+- Developer experienced with Zeek and Spicy
+- Claude Code (Sonnet 4.5 or similar) as AI assistant
+- ~200K token budget per session
+- Human reviews all AI-generated code
+- Testing infrastructure already in place
+
+### Phase-by-Phase Estimates
+
+#### HTTP to Spicy Migration
+
+| Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
+|-------|------------|---------------------|--------------------------|-------------------------|--------|
+| **Phase 1: Spicy Grammar** | 8-10 weeks | 2-3M tokens | 3-4 weeks | 4-5 weeks | AI can generate grammar quickly, but iterations needed for edge cases |
+| **Phase 2: Feature Parity** | 6-8 weeks | 3-4M tokens | 3-4 weeks | 4-6 weeks | AI helps with test failures, but debugging is human-intensive |
+| **Phase 2.5: Performance** | 3-4 weeks | 1-2M tokens | 2-3 weeks | 3-4 weeks | Profiling and optimization requires human expertise |
+| **Phase 3: Production** | 4-6 weeks | 500K-1M tokens | 3-4 weeks | 4-6 weeks | Rollout, beta testing mostly human-driven |
+| **HTTP Total** | **21-28 weeks** | **7-10M tokens** | **11-15 weeks** | **15-21 weeks** | **~40-50% time reduction** |
+
+#### MCP Implementation
+
+| Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
+|-------|------------|---------------------|--------------------------|-------------------------|--------|
+| **MCP Phase 1: SSE** | 3-4 weeks | 800K-1.2M tokens | 1.5-2 weeks | 2-3 weeks | Well-defined protocol, AI can generate parser efficiently |
+| **MCP Phase 2: JSON-RPC** | 5-6 weeks | 1.5-2M tokens | 2-3 weeks | 3-4 weeks | AI handles JSON parsing logic well |
+| **MCP Phase 3: Detection** | 3-4 weeks | 1-1.5M tokens | 1.5-2 weeks | 2-3 weeks | Heuristics benefit from AI pattern generation |
+| **MCP Phase 4: Advanced** | 4-6 weeks | 1.5-2M tokens | 2-3 weeks | 3-4 weeks | Security features need careful human review |
+| **MCP Total** | **15-20 weeks** | **4.8-6.7M tokens** | **7.5-10 weeks** | **10-14 weeks** | **~45-50% time reduction** |
+
+### Overall Project Estimates
+
+| Metric | Human-Only | AI-Assisted | Reduction |
+|--------|------------|-------------|-----------|
+| **Total Duration** | 30-36 weeks (7-9 months) | 18-25 weeks (4-6 months) | **40-45%** |
+| **Token Budget** | N/A | 12-17M tokens | - |
+| **Human Time** | 30-36 weeks | 18.5-25 weeks | **35-40%** |
+| **Sessions Required** | N/A | 60-85 sessions (~200K tokens each) | - |
+
+### Detailed Token Breakdown by Activity
+
+#### Phase 1: Spicy HTTP Grammar (2-3M tokens)
+
+**Grammar Generation (800K-1M tokens)**
+- Initial HTTP grammar structure: 50K tokens
+- Request/response parsing: 100K tokens
+- Header parsing with edge cases: 150K tokens
+- Chunked encoding implementation: 200K tokens
+- Version handling and status codes: 100K tokens
+- Integration with Zeek events: 200K tokens
+- Iterations and refinements (3-5 cycles): 200K tokens
+
+**Testing & Debugging (800K-1M tokens)**
+- Test case generation: 150K tokens
+- Debugging parse failures: 300K tokens
+- Edge case handling: 200K tokens
+- Performance profiling analysis: 150K tokens
+- Documentation generation: 200K tokens
+
+**Context Management (400K-600K tokens)**
+- Re-reading existing HTTP analyzer: 300K tokens
+- Zeek API reference lookups: 150K tokens
+- Spicy documentation consultation: 150K tokens
+
+#### Phase 2: Feature Parity (3-4M tokens)
+
+**Test-Driven Development (1.5-2M tokens)**
+- Running and analyzing 45+ test failures: 500K tokens
+- Fixing each test iteratively (~40K/test): 1.8M tokens
+- Regression testing: 200K tokens
+
+**Feature Implementation (1-1.5M tokens)**
+- File analysis integration: 300K tokens
+- Content decompression: 300K tokens
+- WebSocket upgrade handling: 200K tokens
+- Authentication parsing: 200K tokens
+- Error handling improvements: 200K tokens
+
+**Context & Documentation (500K-700K tokens)**
+- Re-reading modified code: 400K tokens
+- Updating documentation: 300K tokens
+
+#### Phase 2.5: Performance Optimization (1-2M tokens)
+
+**C++ Plugin Development (600K-800K tokens)**
+- Decompression plugin design: 150K tokens
+- Implementation with security checks: 300K tokens
+- Zeek API integration: 150K tokens
+- Testing compression bomb scenarios: 200K tokens
+
+**Optimization Implementation (400K-600K tokens)**
+- Early MCP detection logic: 150K tokens
+- Selective JSON parsing: 150K tokens
+- Connection state optimization: 150K tokens
+- SSE stream handling: 150K tokens
+
+**Benchmarking Analysis (200K-400K tokens)**
+- Performance test analysis: 200K tokens
+- Optimization recommendations: 200K tokens
+
+#### MCP Phase 1: SSE Parser (800K-1.2M tokens)
+
+**SSE Grammar (400K-500K tokens)**
+- SSE event parsing: 150K tokens
+- Multi-line data handling: 100K tokens
+- Event ID tracking: 100K tokens
+- Integration with HTTP: 150K tokens
+
+**Testing (300K-500K tokens)**
+- Test case creation: 150K tokens
+- Edge case debugging: 200K tokens
+- Documentation: 150K tokens
+
+**Context (100K-200K tokens)**
+- SSE RFC consultation: 100K tokens
+- MCP transport spec review: 100K tokens
+
+#### MCP Phase 2: JSON-RPC Parser (1.5-2M tokens)
+
+**Zeek Script Implementation (800K-1M tokens)**
+- JSON-RPC message parsing: 200K tokens
+- Method classification logic: 200K tokens
+- Request/response correlation: 300K tokens
+- Error handling: 200K tokens
+
+**Log Format Implementation (400K-600K tokens)**
+- MCP::Info record structure: 150K tokens
+- Logging event handlers: 200K tokens
+- Privacy/security configurations: 200K tokens
+
+**Testing & Iteration (300K-400K tokens)**
+- Test MCP conversations: 200K tokens
+- Edge case handling: 200K tokens
+
+#### MCP Phase 3: Detection & Correlation (1-1.5M tokens)
+
+**Heuristics Implementation (500K-700K tokens)**
+- MCP endpoint detection: 150K tokens
+- Content-Type analysis: 100K tokens
+- SSE correlation logic: 200K tokens
+- Header signature matching: 150K tokens
+
+**Integration Testing (500K-800K tokens)**
+- Full pipeline testing: 400K tokens
+- False positive analysis: 200K tokens
+- Documentation: 200K tokens
+
+#### MCP Phase 4: Advanced Features (1.5-2M tokens)
+
+**Security Features (700K-1M tokens)**
+- Tool invocation tracking: 250K tokens
+- Resource access logging: 250K tokens
+- Error analysis: 200K tokens
+- Alert generation: 300K tokens
+
+**Testing & Documentation (800K-1M tokens)**
+- Comprehensive test suite: 400K tokens
+- Security review: 200K tokens
+- User documentation: 400K tokens
+
+### Key Factors Affecting AI Assistance Effectiveness
+
+**High AI Value (50-70% time reduction):**
+- Grammar generation (syntax is AI's strength)
+- Boilerplate code (events, logging, records)
+- Test case generation
+- Documentation writing
+- Pattern matching and heuristics
+- Error handling code
+
+**Medium AI Value (30-50% time reduction):**
+- Debugging test failures (AI suggests, human confirms)
+- Performance optimization (AI proposes, human profiles)
+- Integration code (requires understanding both systems)
+- Edge case handling (AI generates, human validates)
+
+**Low AI Value (10-30% time reduction):**
+- Beta testing and rollout (human-intensive)
+- Community feedback integration (requires judgment)
+- Performance profiling (requires real environment)
+- Security hardening (requires expertise)
+- Production monitoring (operational task)
+
+### Session Planning
+
+**Typical AI-Assisted Session:**
+- **Budget:** 200K tokens
+- **Duration:** 2-4 hours (wall clock)
+- **Human time:** 1-2 hours (review + feedback)
+- **Coverage:** 1-2 days of solo development work
+
+**Example Session Breakdown:**
+1. Context loading (30K tokens): Read relevant files, previous work
+2. Task planning (10K tokens): Break down work, create todos
+3. Implementation (80K tokens): Generate code, tests
+4. Iteration (50K tokens): Fix issues, refine based on feedback
+5. Documentation (20K tokens): Comments, commit messages
+6. Buffer (10K tokens): Unexpected issues
+
+**Recommended Workflow:**
+- **Week 1-2:** Daily sessions (5 sessions/week) for rapid prototyping
+- **Week 3+:** 3-4 sessions/week for refinement and testing
+- **Testing phases:** 2-3 sessions/week (more human-driven)
+- **Rollout phases:** 1-2 sessions/week (mostly human work)
+
+### Cost Estimates
+
+**Token Costs (assuming Claude API pricing):**
+- Input tokens: ~$3 per million
+- Output tokens: ~$15 per million
+- Typical ratio: 40% input, 60% output
+
+**Total Project Token Cost:**
+- Input: ~5-7M tokens × $3/M = $15-21
+- Output: ~7-10M tokens × $15/M = $105-150
+- **Total: $120-170** (for AI assistance only)
+
+**Human Cost Comparison:**
+- Senior developer: ~$80-120/hour
+- Human-only: 30-36 weeks × 40 hours × $100 = $120,000-144,000
+- AI-assisted: 18.5-25 weeks × 40 hours × $100 + $150 = $74,000-100,000
+- **Savings: $20,000-44,000 (15-30%)**
+
+Note: Assumes developer time remains constant (senior level). In practice, AI assistance may enable less experienced developers to accomplish the same work, multiplying cost savings.
+
+### Risks and Limitations
+
+**AI-Generated Code Risks:**
+1. **Subtle bugs in edge cases** - Requires thorough testing
+2. **Performance issues** - AI may not optimize for Zeek's architecture
+3. **Security vulnerabilities** - Human security review essential
+4. **Maintainability concerns** - AI code may be verbose or unclear
+
+**Mitigation Strategies:**
+- **100% human review** of all generated code
+- **Comprehensive testing** against existing test suite
+- **Performance benchmarking** at each phase
+- **Security review** by experienced Zeek developer
+- **Iterative refinement** based on real-world testing
+
+**When AI Assistance Is Less Effective:**
+- Complex debugging requiring deep system knowledge
+- Performance optimization needing profiling tools
+- Production rollout and monitoring
+- Community engagement and feedback integration
+- Design decisions requiring domain expertise
 
 ---
 
