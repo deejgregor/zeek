@@ -1,6 +1,6 @@
 # Zeek MCP Protocol Support: Specification and Implementation Plan
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** November 26, 2025
 **Author:** Zeek Development Team
 **Document Type:** Planning Document for Zeek MCP Integration
@@ -525,6 +525,24 @@ module MCP;
 export {
     redef enum Log::ID += { LOG };
 
+    ## Content capture settings for detailed MCP analysis
+    ## WARNING: Enabling these may log sensitive data
+
+    ## Capture full prompt content from prompts/get responses
+    option capture_prompt_content = F;
+
+    ## Capture resource content previews from resources/read responses
+    option capture_resource_preview = F;
+
+    ## Capture full sampling prompts sent to LLMs
+    option capture_sampling_prompts = F;
+
+    ## Maximum size for captured content fields (0 = unlimited)
+    option max_content_capture_size = 1024;
+
+    ## Apply content redaction patterns (e.g., for credit cards, SSNs)
+    option enable_content_redaction = T;
+
     type MethodType: enum {
         INITIALIZE,
         RESOURCES_LIST,
@@ -581,8 +599,23 @@ export {
         ## For prompts: prompt name
         prompt_name: string &log &optional;
 
+        ## For prompts: prompt description (if provided by server)
+        prompt_description: string &log &optional;
+
+        ## For prompts: full prompt content (optional, see capture settings)
+        prompt_content: string &log &optional;
+
+        ## For resource reads: content preview (optional, truncated)
+        resource_content_preview: string &log &optional;
+
+        ## For resource reads: content size (bytes)
+        resource_content_size: count &log &optional;
+
         ## For sampling: model name
         model: string &log &optional;
+
+        ## For sampling: prompt content sent to LLM (optional, see capture settings)
+        sampling_prompt: string &log &optional;
 
         ## Request message size (bytes)
         request_size: count &log &default=0;
@@ -720,10 +753,33 @@ request_size=1024 is_notification=F has_response=T response_status=success
 response_size=2048 response_time=0.333s sse_event_id=evt-12345 timed_out=F
 ```
 
+**mcp.log - Prompt Usage (with optional content capture):**
+```
+ts=1732600000.300000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=2 jsonrpc_version=2.0 msg_id=50 method=PROMPTS_GET method_name=prompts/get
+prompt_name=git-commit prompt_description="Generate a git commit message"
+tool_args={"changes":"Added MCP support to HTTP analyzer"}[truncated]
+prompt_content={"messages":[{"role":"user","content":"Generate a commit..."}]}[truncated]
+request_size=512 is_notification=F has_response=T response_status=success
+response_size=256 response_time=0.100s timed_out=F
+```
+*Note: `prompt_content` only present if `capture_prompt_content=T`*
+
+**mcp.log - Resource Read (with optional preview):**
+```
+ts=1732600000.600000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=3 jsonrpc_version=2.0 msg_id=51 method=RESOURCES_READ
+method_name=resources/read resource_uri=file:///project/config.yaml
+resource_content_preview="# Application Config\nserver:\n  host: localhost..."[truncated]
+resource_content_size=8192 request_size=256 is_notification=F has_response=T
+response_status=success response_size=8500 response_time=0.050s timed_out=F
+```
+*Note: `resource_content_preview` only present if `capture_resource_preview=T`*
+
 **mcp.log - Notification (No Response):**
 ```
 ts=1732600000.500000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
-trans_depth=2 jsonrpc_version=2.0 method=NOTIFICATIONS_PROGRESS
+trans_depth=4 jsonrpc_version=2.0 method=NOTIFICATIONS_PROGRESS
 method_name=notifications/progress request_size=256 is_notification=T has_response=F
 progress_token=task-abc123 progress_value=50 progress_total=100 timed_out=F
 ```
@@ -731,11 +787,21 @@ progress_token=task-abc123 progress_value=50 progress_total=100 timed_out=F
 **mcp.log - Error Response:**
 ```
 ts=1732600000.750000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
-trans_depth=3 jsonrpc_version=2.0 msg_id=43 method=RESOURCES_READ
+trans_depth=5 jsonrpc_version=2.0 msg_id=43 method=RESOURCES_READ
 method_name=resources/read resource_uri=file:///etc/passwd request_size=512
 is_notification=F has_response=T response_status=error error_code=-32001
 error_message="Access denied to resource" response_size=128 response_time=0.050s timed_out=F
 ```
+
+**mcp.log - Sampling Request (metadata only, no prompt content):**
+```
+ts=1732600000.900000 uid=CHhAvVGS1DHFjwGM9 id=[192.168.1.100:54321 -> 10.0.1.50:443]
+trans_depth=6 jsonrpc_version=2.0 msg_id=52 method=SAMPLING_CREATE_MESSAGE
+method_name=sampling/createMessage model=claude-3-5-sonnet-20241022
+request_size=4096 is_notification=F has_response=T response_status=success
+response_size=2048 response_time=1.250s timed_out=F
+```
+*Note: `sampling_prompt` field omitted (default: `capture_sampling_prompts=F`)*
 
 **mcp.log - Timed Out (No Response Received):**
 ```
@@ -1797,36 +1863,219 @@ data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"World"
 
 ### Appendix D: Security Considerations
 
-**Privacy Concerns:**
+**Deployment Context:**
 
-1. **Tool Arguments:** May contain sensitive data
-   - **Mitigation:** Truncate in logs, hash full content
-   - **Option:** Disable logging via policy
+Zeek will only see unencrypted MCP traffic in specific deployment scenarios:
+- Break-and-inspect TLS proxy environments
+- Positioned after TLS termination (e.g., behind load balancer/reverse proxy)
+- Local monitoring of unencrypted development/testing servers
 
-2. **Resource Content:** Could be proprietary
-   - **Mitigation:** Log URIs only, not content
-   - **Option:** Allowlist of safe resource patterns
+In these contexts, Zeek already has access to the full HTTP content, so the primary concerns are:
+1. **What to log** for security/analysis purposes
+2. **How to handle sensitive data** (PII, credentials, PCI data, etc.)
+3. **Configurability** to balance visibility with privacy
 
-3. **Prompts:** May reveal business logic
-   - **Mitigation:** Log prompt names, not content
-   - **Option:** Redaction policies
+---
 
-**Security Monitoring:**
+**Understanding MCP Primitives (for Privacy Analysis):**
 
-1. **Anomaly Detection:**
-   - Unusual tool invocation frequency
-   - Access to unexpected resources
-   - Error rate spikes
+**1. Resources (`resources/read`):**
+- **What they are:** Read-only data fetched over MCP (not via direct file:// or http:// access)
+- **URI examples:** `file:///etc/config.yaml`, `database://prod/schema`, `git://repo/history`
+- **Content transfer:** The MCP server fetches the resource and returns full content in JSON-RPC response
+- **Privacy risk:** HIGH - Content can be large, proprietary, or contain sensitive data
+- **Logging strategy:**
+  - Always log: Resource URI (identifier)
+  - Optional: Content preview (truncated, controlled by `capture_resource_preview`)
+  - Always log: Content size for forensics
 
-2. **Access Control:**
-   - Track which clients access which tools
-   - Build authorization matrix
-   - Alert on violations
+**2. Prompts (`prompts/get`):**
+- **What they are:** User-selected, server-defined reusable templates with arguments
+- **Examples:** `git-commit`, `explain-code`, `debug-error`
+- **Content:** Templates return structured messages/instructions for the LLM
+- **Privacy risk:** MEDIUM - Prompt arguments may contain business logic or queries
+- **Logging strategy:**
+  - Always log: Prompt name (e.g., `git-commit`)
+  - Optional: Prompt description (if server provides)
+  - Optional: Full prompt content (controlled by `capture_prompt_content`)
+  - Always log: Arguments (truncated, may need redaction)
 
-3. **Data Exfiltration:**
-   - Large resource reads
-   - Repeated tool calls (enumeration)
-   - SSE stream volume
+**3. Tools (`tools/call`):**
+- **What they are:** Executable functions the LLM can invoke
+- **Examples:** `execute_query`, `read_file`, `make_api_call`, `run_code`
+- **Arguments:** Can contain queries, code, API parameters, file paths
+- **Privacy risk:** VERY HIGH - Arguments often contain sensitive operations/data
+- **Logging strategy:**
+  - Always log: Tool name
+  - Always log: Arguments (truncated, with redaction)
+  - Consider: Pattern-based redaction for known sensitive patterns
+
+**4. Sampling (`sampling/createMessage`):**
+- **What it is:** Client requesting LLM to generate completions
+- **Content:** The full prompt context sent to the LLM (user input + context)
+- **Privacy risk:** EXTREME - Can contain anything the user typed
+- **Logging strategy:**
+  - Always log: Model name, metadata
+  - Optional: Prompt content (controlled by `capture_sampling_prompts`)
+  - Default: Do NOT log prompt content
+
+---
+
+**Privacy Concerns and Mitigations:**
+
+**1. Tool Arguments**
+- **Risk:** May contain passwords, API keys, PII, PCI data, code, queries
+- **Default behavior:** Truncate to `max_content_capture_size` (default: 1024 bytes)
+- **Optional:** Pattern-based redaction (`enable_content_redaction = T`)
+  - Credit card patterns: `\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}`
+  - SSN patterns: `\d{3}-\d{2}-\d{4}`
+  - Email patterns (configurable): `[\w\.-]+@[\w\.-]+`
+- **Forensics:** Hash full content for later correlation if needed
+- **Configuration:** Can disable logging entirely per tool via policy
+
+**2. Resource Content**
+- **Risk:** Potentially large proprietary data (source code, configs, database contents)
+- **Default behavior:** Log URI only, NOT content
+- **Optional:** `capture_resource_preview = T` enables truncated preview
+- **Always log:** `resource_content_size` for volumetric analysis
+- **Forensics:** Resource URI + timestamp allows reconstruction if source preserved
+- **Note:** In break-and-inspect scenarios, full content is already visible to security team
+
+**3. Resource URIs**
+- **Risk:** URIs themselves may reveal architecture (`database://prod-mysql-01/users`)
+- **Default behavior:** Log full URI
+- **Optional:** URI anonymization for specific patterns
+- **Use case:** Track access patterns without revealing exact backend systems
+
+**4. Prompt Content**
+- **Risk:** Prompt templates may reveal business processes or proprietary workflows
+- **Default behavior:** Log prompt name only
+- **Optional:** `capture_prompt_content = T` enables full template logging
+- **Typical use:** Understanding MCP interactions, not security monitoring
+- **Note:** Prompt templates are server-defined and relatively static
+
+**5. Prompt Arguments**
+- **Risk:** User-provided values may contain sensitive queries or data
+- **Default behavior:** Truncate and apply redaction (same as tool arguments)
+- **Example:** `git-commit` prompt with argument `changes: "Fixed auth bypass bug"`
+
+**6. Sampling Prompts (Highest Risk)**
+- **Risk:** Full context sent to LLM - may contain any user input
+- **Default behavior:** Do NOT log prompt content
+- **Optional:** `capture_sampling_prompts = T` (use with extreme caution)
+- **Metadata always logged:** Model name, token counts, timing
+- **Use case for enabling:** Debugging MCP flows, not production security monitoring
+
+---
+
+**Configuration Options:**
+
+```zeek
+# Default: Security-focused (minimal sensitive data capture)
+@load base/protocols/mcp
+
+# Option 1: Enable full MCP interaction visibility (development/debugging)
+redef MCP::capture_prompt_content = T;
+redef MCP::capture_resource_preview = T;
+redef MCP::capture_sampling_prompts = F;  # Still too risky
+redef MCP::max_content_capture_size = 4096;
+
+# Option 2: Maximum security (metadata only)
+redef MCP::capture_prompt_content = F;
+redef MCP::capture_resource_preview = F;
+redef MCP::capture_sampling_prompts = F;
+redef MCP::max_content_capture_size = 256;  # Very short truncation
+
+# Option 3: Research/understanding MCP (use on non-production traffic)
+redef MCP::capture_prompt_content = T;
+redef MCP::capture_resource_preview = T;
+redef MCP::capture_sampling_prompts = T;  # ⚠️ HIGH RISK
+redef MCP::max_content_capture_size = 0;  # Unlimited
+redef MCP::enable_content_redaction = T;  # Still apply pattern redaction
+```
+
+**Recommended Settings by Use Case:**
+
+| Use Case | capture_prompt | capture_resource | capture_sampling | max_size |
+|----------|---------------|------------------|------------------|----------|
+| Production Security | F | F | F | 512 |
+| MCP Debugging | T | T | F | 2048 |
+| Research (non-prod) | T | T | T | 4096 |
+| Compliance Audit | F | F | F | 256 |
+
+---
+
+**Security Monitoring Use Cases:**
+
+**1. Anomaly Detection**
+- **Unusual tool frequency:** Detect tool spam or enumeration attempts
+- **Resource access patterns:** Identify unauthorized data access
+- **Error rate spikes:** Flag authentication failures or permission denials
+- **Time-based anomalies:** Tool calls outside business hours
+- **Volumetric:** Large resource reads (potential exfiltration)
+
+**2. Access Control Monitoring**
+- **Tool authorization matrix:** Track which clients use which tools
+- **Resource access tracking:** Map client → resource URI patterns
+- **Privilege escalation:** Detect access to admin-level tools
+- **Cross-user correlation:** Link multiple MCP sessions to same client
+
+**3. Data Exfiltration Detection**
+- **Large resource reads:** `resource_content_size > threshold`
+- **Repeated tool calls:** Same tool with varying arguments (enumeration)
+- **High-frequency sampling:** Potential data extraction via LLM
+- **SSE stream analysis:** Long-running streams with high byte counts
+
+**4. Compliance and Audit**
+- **Tool execution audit trail:** Who called what tool, when, with what arguments
+- **Resource access logs:** Prove (or disprove) access to sensitive resources
+- **Model usage tracking:** Which AI models accessed what data
+- **Retention:** MCP logs as evidence for incident investigation
+
+**5. AI-Specific Security Risks**
+- **Prompt injection detection:** Unusual characters or patterns in arguments
+- **Tool chaining attacks:** Sequences of tools that together achieve malicious goal
+- **Context poisoning:** Resources containing malicious instructions
+- **Model jailbreaking attempts:** Sampling prompts with known jailbreak patterns
+
+---
+
+**Sensitive Data Handling Best Practices:**
+
+1. **Start conservative:** Use default settings (minimal capture) in production
+2. **Enable selectively:** Turn on content capture only for debugging specific issues
+3. **Apply redaction:** Always enable `enable_content_redaction` if capturing content
+4. **Audit access:** Restrict access to MCP logs (they may contain sensitive data)
+5. **Retention policies:** Shorter retention for logs with content capture enabled
+6. **Test patterns:** Validate redaction patterns with sample data before production
+7. **Document decisions:** Record why content capture was enabled and when to disable
+
+**Example Redaction Implementation:**
+
+```zeek
+function redact_sensitive(content: string): string
+{
+    local result = content;
+
+    # Credit card numbers
+    result = sub(result, /\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}/, "[REDACTED:CC]");
+
+    # SSN
+    result = sub(result, /\d{3}-\d{2}-\d{4}/, "[REDACTED:SSN]");
+
+    # Email addresses (optional)
+    if ( MCP::redact_email_addresses )
+        result = sub(result, /[\w\.-]+@[\w\.-]+/, "[REDACTED:EMAIL]");
+
+    # AWS keys
+    result = sub(result, /AKIA[0-9A-Z]{16}/, "[REDACTED:AWS_KEY]");
+
+    # Passwords in URLs
+    result = sub(result, /:[^:@]+@/, ":[REDACTED:PASS]@");
+
+    return result;
+}
+```
 
 ---
 
@@ -1860,4 +2109,5 @@ The result will be:
 
 **Document Version History:**
 
+- v1.1 (2025-11-26): Added optional content capture fields and comprehensive privacy/security guidance
 - v1.0 (2025-11-26): Initial specification
