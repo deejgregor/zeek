@@ -4,15 +4,26 @@ This file contains instructions and conventions for Claude Code when working on 
 
 ## Git Commit Convention
 
-**IMPORTANT**: Create a git commit after EVERY prompt/response interaction, even when files haven't changed.
+**CRITICAL**: Create a git commit after EVERY SINGLE prompt/response interaction, without exception. This creates a complete audit trail of the conversation for sharing with others and understanding the development process.
 
 ### Commit Requirements
 
-1. **Always commit after each exchange** - Use `--allow-empty` flag when no files changed
-2. **Include full user prompt** in commit message under "USER PROMPT:" section
-3. **Include complete assistant response** under "ASSISTANT RESPONSE:" section (excluding code diffs)
-4. **Use descriptive subject line** following conventional commit format
-5. **Commit all changed files** - Use `git add -A` or stage specific changed files before committing
+1. **Commit after EVERY prompt** - No exceptions. Even simple questions get committed.
+2. **Use `--allow-empty` flag** when no files changed
+3. **Include full user prompt** in commit message under "USER PROMPT:" section
+4. **Include complete assistant response** under "ASSISTANT RESPONSE:" section (excluding code diffs)
+5. **Use descriptive subject line** following conventional commit format
+6. **Commit all changed files** - Use `git add -A` or stage specific changed files before committing
+
+### Why Every Prompt Matters
+
+The user is saving these interactions to share with others about how to use Claude effectively. Every prompt/response provides valuable context about:
+- Decision-making process
+- Problem-solving approaches
+- Clarifications and corrections
+- Learning and iteration
+
+**Do not skip commits** - each interaction is part of the complete story.
 
 ### Commit Message Template
 
