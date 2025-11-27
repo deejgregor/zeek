@@ -12,7 +12,7 @@ This file contains instructions and conventions for Claude Code when working on 
 2. **Include full user prompt** in commit message under "USER PROMPT:" section
 3. **Include complete assistant response** under "ASSISTANT RESPONSE:" section (excluding code diffs)
 4. **Use descriptive subject line** following conventional commit format
-5. **Target file**: Always include `MCP_ZEEK_SPECIFICATION.md` in commit command
+5. **Commit all changed files** - Use `git add -A` or stage specific changed files before committing
 
 ### Commit Message Template
 
@@ -32,8 +32,8 @@ ASSISTANT RESPONSE:
 ### Example Commands
 
 ```bash
-# When files changed:
-git commit -m "$(cat <<'EOF'
+# When files changed (recommended approach):
+git add -A && git commit -m "$(cat <<'EOF'
 Docs: <description>
 
 USER PROMPT:
@@ -44,7 +44,21 @@ ASSISTANT RESPONSE:
 ===================
 <response>
 EOF
-)" MCP_ZEEK_SPECIFICATION.md
+)"
+
+# Alternative - stage specific files:
+git add file1.md file2.zeek && git commit -m "$(cat <<'EOF'
+Docs: <description>
+
+USER PROMPT:
+============
+<prompt>
+
+ASSISTANT RESPONSE:
+===================
+<response>
+EOF
+)"
 
 # When no files changed:
 git commit --allow-empty -m "$(cat <<'EOF'
@@ -58,7 +72,7 @@ ASSISTANT RESPONSE:
 ===================
 <response>
 EOF
-)" MCP_ZEEK_SPECIFICATION.md
+)"
 ```
 
 ## Project Context
@@ -76,8 +90,9 @@ Adding MCP (Model Context Protocol) support to Zeek network security monitoring 
    - Combined request/response logging (following Zeek HTTP conventions)
 
 ### Key Files
-- `MCP_ZEEK_SPECIFICATION.md` - Main specification document (current version: 1.2)
+- `MCP_ZEEK_SPECIFICATION.md` - Main specification document (current version: 1.4)
 - `MCP_ZEEK_SPECIFICATION_ORIGINAL.md` - Backup of original separate-logging approach
+- `CLAUDE.md` - This file; working conventions for Claude Code sessions
 
 ### Important Design Decisions
 - **Combined logging**: Request and response in single log entry (like HTTP analyzer)
