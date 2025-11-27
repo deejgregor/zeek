@@ -1,6 +1,6 @@
 # Zeek MCP Protocol Support: Specification and Implementation Plan
 
-**Version:** 1.3
+**Version:** 1.4
 **Date:** November 26, 2025
 **Author:** Zeek Development Team
 **Document Type:** Planning Document for Zeek MCP Integration
@@ -26,6 +26,7 @@
 
 ## Version History
 
+- **v1.4** (2025-11-26): Converted time estimates from weeks to hours for flexible scheduling, added planning examples for different weekly hour commitments (10/20/40/60 hrs/week)
 - **v1.3** (2025-11-26): Added AI-assisted development estimates including token budgets, human time, wall clock time, detailed breakdowns, session planning, and cost analysis
 - **v1.2** (2025-11-26): Updated terminology from "B&I proxies" to "TLSI/TLS termination" to cover broader deployment scenarios
 - **v1.1** (2025-11-26): Added optional content capture fields and comprehensive privacy/security guidance
@@ -2411,34 +2412,42 @@ AI-assisted development estimates consider:
 
 ### Phase-by-Phase Estimates
 
+**Note:** Hours assume focused development time, not calendar time. A "typical" 40-hour work week would be 1 week = 40 hours, but adjust based on your actual available hours.
+
 #### HTTP to Spicy Migration
 
 | Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
 |-------|------------|---------------------|--------------------------|-------------------------|--------|
-| **Phase 1: Spicy Grammar** | 8-10 weeks | 2-3M tokens | 3-4 weeks | 4-5 weeks | AI can generate grammar quickly, but iterations needed for edge cases |
-| **Phase 2: Feature Parity** | 6-8 weeks | 3-4M tokens | 3-4 weeks | 4-6 weeks | AI helps with test failures, but debugging is human-intensive |
-| **Phase 2.5: Performance** | 3-4 weeks | 1-2M tokens | 2-3 weeks | 3-4 weeks | Profiling and optimization requires human expertise |
-| **Phase 3: Production** | 4-6 weeks | 500K-1M tokens | 3-4 weeks | 4-6 weeks | Rollout, beta testing mostly human-driven |
-| **HTTP Total** | **21-28 weeks** | **7-10M tokens** | **11-15 weeks** | **15-21 weeks** | **~40-50% time reduction** |
+| **Phase 1: Spicy Grammar** | 320-400 hrs | 2-3M tokens | 120-160 hrs | 160-200 hrs | AI can generate grammar quickly, but iterations needed for edge cases |
+| **Phase 2: Feature Parity** | 240-320 hrs | 3-4M tokens | 120-160 hrs | 160-240 hrs | AI helps with test failures, but debugging is human-intensive |
+| **Phase 2.5: Performance** | 120-160 hrs | 1-2M tokens | 80-120 hrs | 120-160 hrs | Profiling and optimization requires human expertise |
+| **Phase 3: Production** | 160-240 hrs | 500K-1M tokens | 120-160 hrs | 160-240 hrs | Rollout, beta testing mostly human-driven |
+| **HTTP Total** | **840-1120 hrs** | **7-10M tokens** | **440-600 hrs** | **600-840 hrs** | **~40-50% time reduction** |
 
 #### MCP Implementation
 
 | Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
 |-------|------------|---------------------|--------------------------|-------------------------|--------|
-| **MCP Phase 1: SSE** | 3-4 weeks | 800K-1.2M tokens | 1.5-2 weeks | 2-3 weeks | Well-defined protocol, AI can generate parser efficiently |
-| **MCP Phase 2: JSON-RPC** | 5-6 weeks | 1.5-2M tokens | 2-3 weeks | 3-4 weeks | AI handles JSON parsing logic well |
-| **MCP Phase 3: Detection** | 3-4 weeks | 1-1.5M tokens | 1.5-2 weeks | 2-3 weeks | Heuristics benefit from AI pattern generation |
-| **MCP Phase 4: Advanced** | 4-6 weeks | 1.5-2M tokens | 2-3 weeks | 3-4 weeks | Security features need careful human review |
-| **MCP Total** | **15-20 weeks** | **4.8-6.7M tokens** | **7.5-10 weeks** | **10-14 weeks** | **~45-50% time reduction** |
+| **MCP Phase 1: SSE** | 120-160 hrs | 800K-1.2M tokens | 60-80 hrs | 80-120 hrs | Well-defined protocol, AI can generate parser efficiently |
+| **MCP Phase 2: JSON-RPC** | 200-240 hrs | 1.5-2M tokens | 80-120 hrs | 120-160 hrs | AI handles JSON parsing logic well |
+| **MCP Phase 3: Detection** | 120-160 hrs | 1-1.5M tokens | 60-80 hrs | 80-120 hrs | Heuristics benefit from AI pattern generation |
+| **MCP Phase 4: Advanced** | 160-240 hrs | 1.5-2M tokens | 80-120 hrs | 120-160 hrs | Security features need careful human review |
+| **MCP Total** | **600-800 hrs** | **4.8-6.7M tokens** | **300-400 hrs** | **400-560 hrs** | **~45-50% time reduction** |
 
 ### Overall Project Estimates
 
 | Metric | Human-Only | AI-Assisted | Reduction |
 |--------|------------|-------------|-----------|
-| **Total Duration** | 30-36 weeks (7-9 months) | 18-25 weeks (4-6 months) | **40-45%** |
+| **Total Duration** | 1440-1920 hrs | 740-1000 hrs | **40-45%** |
 | **Token Budget** | N/A | 12-17M tokens | - |
-| **Human Time** | 30-36 weeks | 18.5-25 weeks | **35-40%** |
+| **Human Active Time** | 1440-1920 hrs | 740-1000 hrs | **35-40%** |
 | **Sessions Required** | N/A | 60-85 sessions (~200K tokens each) | - |
+
+**Planning Examples:**
+- **10 hrs/week:** Human-only = 144-192 weeks (2.8-3.7 years), AI-assisted = 74-100 weeks (1.4-1.9 years)
+- **20 hrs/week:** Human-only = 72-96 weeks (1.4-1.8 years), AI-assisted = 37-50 weeks (9-12 months)
+- **40 hrs/week:** Human-only = 36-48 weeks (9-12 months), AI-assisted = 18.5-25 weeks (4-6 months)
+- **Full-time sprint (60 hrs/week):** Human-only = 24-32 weeks (6-8 months), AI-assisted = 12-17 weeks (3-4 months)
 
 ### Detailed Token Breakdown by Activity
 
