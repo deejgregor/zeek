@@ -65,7 +65,12 @@ X509* x509_get_ocsp_signer(const STACK_OF(X509)* certs,
 	const ASN1_OCTET_STRING* key  = nullptr;
 	const X509_NAME*         name = nullptr;
 
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L
+	// OpenSSL 3.6+ removed OCSP_resp_get0_id, use OCSP_BASICRESP_get0_id
+	if ( ! OCSP_BASICRESP_get0_id(basic_resp, &key, &name) )
+#else
 	if ( ! OCSP_resp_get0_id(basic_resp, &key, &name) )
+#endif
 		return nullptr;
 
 	if ( name )
@@ -348,7 +353,11 @@ function x509_ocsp_verify%(certs: x509_opaque_vector, ocsp_reply: string, root_c
 
 	// Because we actually want to be able to give nice error messages that show why we were
 	// not able to verify the OCSP response - do our own verification logic first.
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L
+	signer = x509_get_ocsp_signer(OCSP_BASICRESP_get0_certs(basic), basic);
+#else
 	signer = x509_get_ocsp_signer(OCSP_resp_get0_certs(basic), basic);
+#endif
 
 	/*
 	Do this perhaps - OpenSSL also cannot do it, so I do not really feel bad about it.
@@ -366,7 +375,11 @@ function x509_ocsp_verify%(certs: x509_opaque_vector, ocsp_reply: string, root_c
 		}
 
 		{
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L
+		auto basic_certs = OCSP_BASICRESP_get0_certs(basic);
+#else
 		auto basic_certs = OCSP_resp_get0_certs(basic);
+#endif
 		if ( basic_certs )
 			ocsp_certs = sk_X509_dup(basic_certs);
 
@@ -410,17 +423,29 @@ function x509_ocsp_verify%(certs: x509_opaque_vector, ocsp_reply: string, root_c
 	else
 		{
 		// issuer not in list sent by server, check store
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L
+		// OpenSSL 3.6+ removed X509_OBJECT_new/free, use stack allocation
+		X509_OBJECT obj_storage;
+		X509_OBJECT *obj = &obj_storage;
+#else
 		X509_OBJECT *obj = X509_OBJECT_new();
+#endif
 		int lookup = X509_STORE_get_by_subject(csc, X509_LU_X509, X509_get_subject_name(cert), obj);
 		if ( lookup <= 0)
 			{
 			rval = x509_result_record(lookup, "Could not find issuer of host certificate");
+#if OPENSSL_VERSION_NUMBER < 0x30600000L
 			X509_OBJECT_free(obj);
+#endif
 			goto x509_ocsp_cleanup;
 			}
 
-		certid = OCSP_cert_to_id(nullptr, cert,X509_OBJECT_get0_X509( obj));
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L
+		certid = OCSP_cert_to_id(nullptr, cert, X509_OBJECT_get_X509(obj));
+#else
+		certid = OCSP_cert_to_id(nullptr, cert, X509_OBJECT_get0_X509(obj));
 		X509_OBJECT_free(obj);
+#endif
 		}
 
 
@@ -438,7 +463,12 @@ function x509_ocsp_verify%(certs: x509_opaque_vector, ocsp_reply: string, root_c
 		goto x509_ocsp_cleanup;
 		}
 
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L
+	// OpenSSL 3.6+ removed OCSP_SINGLERESP_get0_id, use OCSP_SINGLERESP_get_certid
+	if ( OCSP_id_cmp(certid, OCSP_SINGLERESP_get_certid(single)) != 0 )
+#else
 	if ( OCSP_id_cmp(certid, reinterpret_cast<const OCSP_CERTID*>(OCSP_SINGLERESP_get0_id(single))) != 0 )
+#endif
 		return x509_result_record(-1, "OCSP reply is not for host certificate");
 
 	// next - check freshness of proof...
@@ -1038,7 +1068,12 @@ function x509_check_cert_hostname%(cert_opaque: opaque of x509, hostname: string
 				continue;
 
 			std::size_t len = ASN1_STRING_length(gen->d.ia5);
+#if OPENSSL_VERSION_NUMBER >= 0x30600000L && !defined(ASN1_STRING_get0_data)
+			// OpenSSL 3.6+ may have removed ASN1_STRING_get0_data, use ASN1_STRING_data
+			auto* name = reinterpret_cast<const char*>(ASN1_STRING_data(gen->d.ia5));
+#else
 			auto* name = reinterpret_cast<const char*>(ASN1_STRING_get0_data(gen->d.ia5));
+#endif
 			std::string_view nameview {name, len};
 			if ( check_hostname(hostview, nameview) )
 				{
