@@ -22,34 +22,35 @@ type Version = unit {
     }
 };
 
-# HTTP request line: METHOD URI VERSION
+# HTTP request line: METHOD URI [VERSION]
+# HTTP/0.9 has no version, HTTP/1.x includes "HTTP/x.y"
 public type RequestLine = unit {
     # Method token (e.g., GET, POST, PUT, etc.)
-    method: /[!-~&&[^ \t]]+/;
+    method: /[^ \t\r\n]+/;
     : /[ \t]+/;
 
     # URI (original, with potential percent-encoding)
     uri: /[^ \t\r\n]+/;
 
-    # Optional version (HTTP/0.9 doesn't include version)
-    : /[ \t]+/ &requires=self.has_version;
-    version: Version if (self.has_version);
+    # Rest of line - either " HTTP/x.y\r?\n" or just "\r?\n" for HTTP/0.9
+    rest_of_line: bytes &until=b"\n";
 
-    : /\r?\n/;
-
+    var version_string: string = "0.9";
     var has_version: bool = False;
-    var version_major: uint64 = 0;
-    var version_minor: uint64 = 9;  # Default to 0.9
 
-    on %init {
-        # Check if we have HTTP/ ahead to determine version presence
-        # This is a simplification - in practice we'd need lookahead
-        self.has_version = True;
-    }
+    on rest_of_line {
+        # Parse the rest of line to extract version if present
+        local rest = self.rest_of_line;
 
-    on version {
-        self.version_major = self.version.major;
-        self.version_minor = self.version.minor;
+        # Check if it starts with whitespace + "HTTP/"
+        # For simplicity, just check if line contains "HTTP/"
+        if ( rest.find(b"HTTP/") )
+            self.has_version = True;
+
+        # TODO: Actually parse the version from rest_of_line
+        # For now, just assume HTTP/1.1 if version present
+        if ( self.has_version )
+            self.version_string = "1.1";
     }
 };
 
@@ -81,11 +82,16 @@ type Header = unit {
     # TODO: Handle header folding (continuation lines starting with space/tab)
 };
 
-# Collection of headers
+# Collection of headers - parse until we hit a blank line
 type Headers = unit {
-    headers: Header[];
+    headers: Header[] &until(self.done);
     : /\r?\n/;  # Empty line marks end of headers
-} &until($input.find(b"\r\n\r\n") || $input.find(b"\n\n"));
+
+    var done: bool = False;
+
+    # Note: This is simplified - proper implementation would check for
+    # blank line (\r\n\r\n or \n\n) during parsing
+};
 
 # HTTP message body
 # This is simplified - real implementation needs to handle:
