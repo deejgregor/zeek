@@ -1,6 +1,6 @@
 # Zeek MCP Protocol Support: Specification and Implementation Plan
 
-**Version:** 1.5
+**Version:** 1.6
 **Date:** November 29, 2025
 **Author:** Zeek Development Team
 **Document Type:** Planning Document for Zeek MCP Integration
@@ -28,7 +28,8 @@
 
 ## Version History
 
-- **v1.5** (2025-11-29): Reorganized implementation into 3 separate PRs: (1) HTTP C++→Spicy migration, (2) Enhanced HTTP/SSE features, (3) MCP protocol. This allows incremental review and reduces risk.
+- **v1.6** (2025-11-29): Completed 3-PR reorganization. Removed Phase 2.5 from PR #1, moved SSE and performance optimizations to new PR #2, updated all timelines and AI estimates to reflect the new structure.
+- **v1.5** (2025-11-29): Started reorganization into 3 separate PRs: (1) HTTP C++→Spicy migration, (2) Enhanced HTTP/SSE features, (3) MCP protocol. This allows incremental review and reduces risk.
 - **v1.4** (2025-11-26): Converted time estimates from weeks to hours for flexible scheduling, added planning examples for different weekly hour commitments (10/20/40/60 hrs/week)
 - **v1.3** (2025-11-26): Added AI-assisted development estimates including token budgets, human time, wall clock time, detailed breakdowns, session planning, and cost analysis
 - **v1.2** (2025-11-26): Updated terminology from "B&I proxies" to "TLSI/TLS termination" to cover broader deployment scenarios
@@ -1230,7 +1231,137 @@ To manage complexity and enable incremental review, this work is divided into **
 
 **Timeline:** 6-8 weeks
 
-### Phase 2.5: Performance Optimization (Critical for High-Visibility Deployments)
+### Phase 3: Production Rollout
+
+**Objective:** Replace C++ HTTP analyzer with Spicy version
+
+**Strategy:**
+
+1. **Gradual Rollout**
+   - Week 1-2: Zeek development branch
+   - Week 3-4: Beta testing with volunteers
+   - Week 5-6: Bug fixes based on feedback
+   - Week 7+: Mainline merge
+
+2. **Backward Compatibility**
+   - Maintain C++ version as fallback
+   - Build-time option: `--with-legacy-http`
+   - Default: Spicy HTTP (if Spicy available)
+
+3. **Documentation Updates**
+   - Update Zeek docs: HTTP analyzer now Spicy
+   - Migration notes for plugin developers
+   - Known issues and limitations
+
+4. **Deprecation Plan**
+   - Zeek 7.1: Spicy HTTP becomes default
+   - Zeek 7.2: C++ HTTP marked deprecated
+   - Zeek 8.0: C++ HTTP removed
+
+**Timeline:** 4-6 weeks
+
+---
+
+## PR #2: Enhanced HTTP/SSE Support
+
+**Objective:** Add Server-Sent Events (SSE) parsing and performance optimizations to the Spicy HTTP analyzer
+
+**Dependencies:** PR #1 (HTTP C++ → Spicy migration must be complete)
+
+**Motivation:** This PR prepares the HTTP analyzer for MCP traffic by:
+1. Adding SSE parsing capability (required for MCP's primary transport mechanism)
+2. Optimizing performance for high-volume scenarios (TLSI/TLS termination deployments)
+3. Providing a stable foundation for PR #3's MCP protocol layer
+
+### Phase 1: SSE Parser in Spicy
+
+**Objective:** Add Server-Sent Events parsing capability to handle MCP streaming transport
+
+**SSE Format (RFC 8895):**
+```
+event: message
+id: evt-12345
+data: {"jsonrpc":"2.0","method":"tools/call",...}
+data: ...continued on next line...
+
+event: ping
+```
+
+**Spicy Grammar (`sse.spicy`):**
+
+```spicy
+module SSE;
+
+import zeek;
+
+# SSE Event Stream
+public type EventStream = unit {
+    events: Event[];
+};
+
+# Individual SSE Event
+public type Event = unit {
+    fields: EventField[] &until($$.is_end);
+    : /\n/;  # Empty line marks end of event
+
+    var event_type: string = "message";  # Default
+    var event_id: optional<string>;
+    var data: vector<string>;
+    var retry: optional<uint64>;
+
+    var is_end: bool = False;
+
+    on %done {
+        # Concatenate multi-line data fields
+        self.full_data = "|".join(self.data);
+    }
+
+    var full_data: string;
+};
+
+type EventField = unit {
+    var is_end: bool = False;
+
+    : /\n/ { self.is_end = True; }
+      if (self.is_end) |
+    field_name: /[^:\n]+/;
+    : /: ?/;
+    field_value: /[^\n]*/;
+    : /\n/;
+
+    on %done {
+        switch (self.field_name) {
+            case "event":  parent.event_type = self.field_value;
+            case "id":     parent.event_id = self.field_value;
+            case "data":   parent.data.push_back(self.field_value);
+            case "retry":  parent.retry = self.field_value.to_uint();
+        };
+    }
+};
+```
+
+**Event Mapping (`sse.evt`):**
+
+```
+on SSE::Event::%done -> event sse_event(
+    $conn,
+    $is_orig,
+    self.event_type,
+    self.event_id,
+    self.full_data,
+    self.retry
+);
+```
+
+**Integration with HTTP Analyzer:**
+- Trigger when HTTP `Content-Type: text/event-stream`
+- Switch HTTP analyzer to SSE sub-parser
+- Continue parsing until connection close
+- Maintain connection state for long-lived SSE streams
+
+**Timeline:** 2-3 weeks
+
+### Phase 2: Performance Optimization (Critical for High-Visibility Deployments)
 
 **Context:** In deployments with TLS Inspection (TLSI) proxies or TLS termination points, Zeek visibility of HTTP traffic can increase dramatically compared to typical deployments where most HTTP is encrypted. Performance optimization is critical to handle high-volume HTTP parsing without dropping packets or impacting real-time analysis.
 
@@ -1240,7 +1371,7 @@ To manage complexity and enable incremental review, this work is divided into **
 - **Reverse Proxies:** nginx, HAProxy, Envoy handling TLS at the edge
 - **Development Environments:** Unencrypted local/staging servers
 
-**Objective:** Minimize performance impact of HTTP/MCP parsing for high-throughput scenarios
+**Objective:** Minimize performance impact of HTTP/SSE/MCP parsing for high-throughput scenarios
 
 **Key Optimization Areas:**
 
@@ -1492,129 +1623,43 @@ function track_sse_event(state: SSEState, event_id: string)
 }
 ```
 
-**Timeline:** 3-4 weeks (parallel with Phase 2)
+**Timeline:** 3-4 weeks
 
-### Phase 3: Production Rollout
+### Testing for PR #2
 
-**Objective:** Replace C++ HTTP analyzer with Spicy version
+**SSE Parser Tests:**
+1. Basic SSE event parsing
+2. Multi-line data field handling
+3. Event ID and retry field support
+4. Malformed SSE handling
+5. Long-lived connection stability
 
-**Strategy:**
+**Performance Tests:**
+1. High-volume HTTP traffic (>10K req/s)
+2. Compression bomb detection
+3. Memory usage under load
+4. SSE stream with thousands of events
+5. Mixed MCP/non-MCP traffic
 
-1. **Gradual Rollout**
-   - Week 1-2: Zeek development branch
-   - Week 3-4: Beta testing with volunteers
-   - Week 5-6: Bug fixes based on feedback
-   - Week 7+: Mainline merge
+**Integration Tests:**
+1. SSE detection from HTTP Content-Type
+2. Automatic analyzer switching
+3. Connection state cleanup
+4. Content capture sampling
 
-2. **Backward Compatibility**
-   - Maintain C++ version as fallback
-   - Build-time option: `--with-legacy-http`
-   - Default: Spicy HTTP (if Spicy available)
-
-3. **Documentation Updates**
-   - Update Zeek docs: HTTP analyzer now Spicy
-   - Migration notes for plugin developers
-   - Known issues and limitations
-
-4. **Deprecation Plan**
-   - Zeek 7.1: Spicy HTTP becomes default
-   - Zeek 7.2: C++ HTTP marked deprecated
-   - Zeek 8.0: C++ HTTP removed
-
-**Timeline:** 4-6 weeks
+**Timeline for PR #2:** 5-7 weeks total
 
 ---
 
-## MCP Protocol Implementation Plan
+## PR #3: MCP Protocol Implementation
 
-### Phase 1: SSE Parser in Spicy
+**Objective:** Add MCP protocol analyzer, JSON-RPC parsing, and mcp.log generation
 
-**Objective:** Add Server-Sent Events parsing capability
+**Dependencies:** PR #1 and PR #2 (requires Spicy HTTP analyzer with SSE support)
 
-**SSE Format (RFC 8895):**
-```
-event: message
-id: evt-12345
-data: {"jsonrpc":"2.0","method":"tools/call",...}
-data: ...continued on next line...
+**Motivation:** With HTTP and SSE parsing in place, this PR adds the MCP-specific protocol layer that understands JSON-RPC messages, MCP method calls, and generates mcp.log for security monitoring.
 
-event: ping
-```
-
-**Spicy Grammar (`sse.spicy`):**
-
-```spicy
-module SSE;
-
-import zeek;
-
-# SSE Event Stream
-public type EventStream = unit {
-    events: Event[];
-};
-
-# Individual SSE Event
-public type Event = unit {
-    fields: EventField[] &until($$.is_end);
-    : /\n/;  # Empty line marks end of event
-
-    var event_type: string = "message";  # Default
-    var event_id: optional<string>;
-    var data: vector<string>;
-    var retry: optional<uint64>;
-
-    var is_end: bool = False;
-
-    on %done {
-        # Concatenate multi-line data fields
-        self.full_data = "|".join(self.data);
-    }
-
-    var full_data: string;
-};
-
-type EventField = unit {
-    var is_end: bool = False;
-
-    : /\n/ { self.is_end = True; }
-      if (self.is_end) |
-    field_name: /[^:\n]+/;
-    : /: ?/;
-    field_value: /[^\n]*/;
-    : /\n/;
-
-    on %done {
-        switch (self.field_name) {
-            case "event":  parent.event_type = self.field_value;
-            case "id":     parent.event_id = self.field_value;
-            case "data":   parent.data.push_back(self.field_value);
-            case "retry":  parent.retry = self.field_value.to_uint();
-        };
-    }
-};
-```
-
-**Event Mapping (`sse.evt`):**
-
-```
-on SSE::Event::%done -> event sse_event(
-    $conn,
-    $is_orig,
-    self.event_type,
-    self.event_id,
-    self.full_data,
-    self.retry
-);
-```
-
-**Integration:**
-- Trigger when HTTP `Content-Type: text/event-stream`
-- Switch HTTP analyzer to SSE sub-parser
-- Continue parsing until connection close
-
-**Timeline:** 3-4 weeks
-
-### Phase 2: MCP Protocol Analyzer
+### Phase 1: MCP Protocol Analyzer
 
 **Objective:** Parse JSON-RPC messages in MCP context
 
@@ -1738,7 +1783,7 @@ function classify_mcp_method(method: string): MethodType
 
 **Timeline:** 5-6 weeks
 
-### Phase 3: MCP Detection & Correlation
+### Phase 2: MCP Detection & Correlation
 
 **Objective:** Automatically detect MCP traffic and correlate with HTTP
 
@@ -1790,7 +1835,7 @@ event http_entity_data(c: connection, is_orig: bool, length: count, data: string
 
 **Timeline:** 3-4 weeks
 
-### Phase 4: Advanced Features
+### Phase 3: Advanced Features
 
 **Objective:** Enhance MCP analysis with security-focused features
 
@@ -2320,34 +2365,49 @@ Before production deployment:
 
 ### Overall Project Timeline: 30-36 weeks (~7-9 months)
 
+**Three-PR Structure:**
+- **PR #1:** HTTP C++ → Spicy Migration (Weeks 1-22)
+- **PR #2:** Enhanced HTTP/SSE Support (Weeks 23-29)
+- **PR #3:** MCP Protocol Implementation (Weeks 30-40)
+
 ```
-Month 1-2: HTTP to Spicy Grammar (Phase 1)
+PR #1: HTTP to Spicy Migration (22 weeks)
+=======================================
+Month 1-2: Spicy HTTP Grammar (Phase 1)
    Week 1-4:   Spicy HTTP grammar development
    Week 5-8:   Chunked encoding & headers
    Week 9-10:  Initial testing
 
 Month 3-4: HTTP Feature Parity (Phase 2)
    Week 11-14: Test-driven feature completion
-   Week 15-16: Performance optimization
+   Week 15-16: WebSocket & CONNECT support
    Week 17-18: File analysis integration
 
-Month 5: HTTP Production (Phase 3)
-   Week 19-20: Beta testing
-   Week 21-22: Bug fixes & rollout
+Month 5: HTTP Production Rollout (Phase 3)
+   Week 19-20: Beta testing & bug fixes
+   Week 21-22: Final testing & PR merge
 
-Month 6: SSE & MCP Foundation
-   Week 23-26: SSE parser in Spicy (MCP Phase 1)
+PR #2: Enhanced HTTP/SSE Support (7 weeks)
+==========================================
+Month 6: SSE Parser & Performance (Weeks 23-29)
+   Week 23-25: SSE parser in Spicy (Phase 1)
+   Week 26-27: Performance optimizations (Phase 2)
+   Week 28-29: Testing & PR merge
 
-Month 7-8: MCP Protocol Analyzer
-   Week 27-31: MCP JSON-RPC parsing (MCP Phase 2)
-   Week 32-35: MCP detection & correlation (MCP Phase 3)
+PR #3: MCP Protocol Implementation (11 weeks)
+=============================================
+Month 7-8: MCP Core Implementation (Weeks 30-37)
+   Week 30-34: MCP JSON-RPC parsing (Phase 1)
+   Week 35-37: MCP detection & correlation (Phase 2)
 
-Month 9: MCP Advanced & Testing
-   Week 36-38: Advanced MCP features (MCP Phase 4)
-   Week 39-40: Final testing & documentation
+Month 9: MCP Advanced & Production (Weeks 38-40)
+   Week 38-39: Advanced MCP features (Phase 3)
+   Week 40:    Final testing & PR merge
 ```
 
 ### Key Milestones
+
+**PR #1 Milestones:**
 
 **M1: Spicy HTTP Grammar Complete** (Week 10)
 - All grammar elements defined
@@ -2359,52 +2419,67 @@ Month 9: MCP Advanced & Testing
 - Performance within 10% of C++
 - File extraction works
 
-**M3: HTTP Spicy in Production** (Week 22)
-- Merged to master
+**M3: PR #1 Merged** (Week 22)
+- HTTP Spicy analyzer in production
 - Documentation updated
 - C++ version deprecated
 
-**M4: SSE Parser Ready** (Week 26)
+**PR #2 Milestones:**
+
+**M4: SSE Parser Ready** (Week 25)
 - SSE events parsed correctly
 - Event ID tracking works
 - Integration with HTTP complete
 
-**M5: MCP Logs Generated** (Week 31)
+**M5: Performance Optimizations Complete** (Week 27)
+- Early MCP detection implemented
+- Decompression plugin functional
+- Connection state management optimized
+
+**M6: PR #2 Merged** (Week 29)
+- SSE support production-ready
+- Performance benchmarks met
+- TLSI deployment guidance documented
+
+**PR #3 Milestones:**
+
+**M7: MCP Logs Generated** (Week 34)
 - `mcp.log` populated correctly
 - JSON-RPC messages classified
 - Tool/resource tracking works
 
-**M6: MCP Detection Automated** (Week 35)
+**M8: MCP Detection Automated** (Week 37)
 - MCP traffic auto-detected
 - Correlation with HTTP solid
 - No manual configuration needed
 
-**M7: MCP Production Ready** (Week 40)
+**M9: MCP Production Ready** (Week 40)
 - Full test suite passes
 - Documentation complete
 - Community feedback incorporated
+- PR #3 merged
 
 ### Dependencies
 
 **Critical Path:**
 
 ```
-HTTP Spicy Grammar → HTTP Testing → HTTP Production
-                                         ↓
-                                    SSE Parser
-                                         ↓
-                                   MCP Analyzer
-                                         ↓
-                                  MCP Detection
-                                         ↓
-                                MCP Advanced Features
+PR #1: HTTP Spicy Grammar → HTTP Testing → HTTP Production → [PR #1 MERGE]
+                                                                   ↓
+                          PR #2: SSE Parser → Performance Opts → [PR #2 MERGE]
+                                                                   ↓
+                       PR #3: MCP Analyzer → MCP Detection → Advanced → [PR #3 MERGE]
 ```
+
+**Inter-PR Dependencies:**
+- PR #2 requires PR #1 merged (builds on Spicy HTTP)
+- PR #3 requires PR #1 and PR #2 merged (needs HTTP + SSE)
 
 **External Dependencies:**
 
 - Spicy framework updates (if needed for JSON)
 - Community testing and feedback
-- Zeek core team code review
+- Zeek core team code review for each PR
 
 ### Risk Mitigation
 
@@ -2445,48 +2520,59 @@ AI-assisted development estimates consider:
 - Human reviews all AI-generated code
 - Testing infrastructure already in place
 
-### Phase-by-Phase Estimates
+### Pull Request Estimates
 
 **Note:** Hours assume focused development time, not calendar time. A "typical" 40-hour work week would be 1 week = 40 hours, but adjust based on your actual available hours.
 
-#### HTTP to Spicy Migration
+#### PR #1: HTTP C++ → Spicy Migration
 
 | Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
 |-------|------------|---------------------|--------------------------|-------------------------|--------|
 | **Phase 1: Spicy Grammar** | 320-400 hrs | 2-3M tokens | 120-160 hrs | 160-200 hrs | AI can generate grammar quickly, but iterations needed for edge cases |
 | **Phase 2: Feature Parity** | 240-320 hrs | 3-4M tokens | 120-160 hrs | 160-240 hrs | AI helps with test failures, but debugging is human-intensive |
-| **Phase 2.5: Performance** | 120-160 hrs | 1-2M tokens | 80-120 hrs | 120-160 hrs | Profiling and optimization requires human expertise |
 | **Phase 3: Production** | 160-240 hrs | 500K-1M tokens | 120-160 hrs | 160-240 hrs | Rollout, beta testing mostly human-driven |
-| **HTTP Total** | **840-1120 hrs** | **7-10M tokens** | **440-600 hrs** | **600-840 hrs** | **~40-50% time reduction** |
+| **PR #1 Total** | **720-960 hrs** | **6-8M tokens** | **360-480 hrs** | **480-680 hrs** | **~40-50% time reduction** |
 
-#### MCP Implementation
+#### PR #2: Enhanced HTTP/SSE Support
 
 | Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
 |-------|------------|---------------------|--------------------------|-------------------------|--------|
-| **MCP Phase 1: SSE** | 120-160 hrs | 800K-1.2M tokens | 60-80 hrs | 80-120 hrs | Well-defined protocol, AI can generate parser efficiently |
-| **MCP Phase 2: JSON-RPC** | 200-240 hrs | 1.5-2M tokens | 80-120 hrs | 120-160 hrs | AI handles JSON parsing logic well |
-| **MCP Phase 3: Detection** | 120-160 hrs | 1-1.5M tokens | 60-80 hrs | 80-120 hrs | Heuristics benefit from AI pattern generation |
-| **MCP Phase 4: Advanced** | 160-240 hrs | 1.5-2M tokens | 80-120 hrs | 120-160 hrs | Security features need careful human review |
-| **MCP Total** | **600-800 hrs** | **4.8-6.7M tokens** | **300-400 hrs** | **400-560 hrs** | **~45-50% time reduction** |
+| **Phase 1: SSE Parser** | 120-160 hrs | 800K-1.2M tokens | 60-80 hrs | 80-120 hrs | Well-defined protocol, AI can generate parser efficiently |
+| **Phase 2: Performance** | 120-160 hrs | 1-2M tokens | 80-120 hrs | 120-160 hrs | Profiling and optimization requires human expertise |
+| **PR #2 Total** | **240-320 hrs** | **1.8-3.2M tokens** | **140-200 hrs** | **200-280 hrs** | **~40-45% time reduction** |
+
+#### PR #3: MCP Protocol Implementation
+
+| Phase | Human-Only | AI-Assisted (Tokens) | AI-Assisted (Human Time) | AI-Assisted (Wall Clock) | Notes |
+|-------|------------|---------------------|--------------------------|-------------------------|--------|
+| **Phase 1: MCP Analyzer** | 200-240 hrs | 1.5-2M tokens | 80-120 hrs | 120-160 hrs | AI handles JSON parsing logic well |
+| **Phase 2: Detection** | 120-160 hrs | 1-1.5M tokens | 60-80 hrs | 80-120 hrs | Heuristics benefit from AI pattern generation |
+| **Phase 3: Advanced** | 160-240 hrs | 1.5-2M tokens | 80-120 hrs | 120-160 hrs | Security features need careful human review |
+| **PR #3 Total** | **480-640 hrs** | **4-5.5M tokens** | **220-320 hrs** | **320-440 hrs** | **~45-50% time reduction** |
 
 ### Overall Project Estimates
 
 | Metric | Human-Only | AI-Assisted | Reduction |
 |--------|------------|-------------|-----------|
-| **Total Duration** | 1440-1920 hrs | 740-1000 hrs | **40-45%** |
-| **Token Budget** | N/A | 12-17M tokens | - |
-| **Human Active Time** | 1440-1920 hrs | 740-1000 hrs | **35-40%** |
-| **Sessions Required** | N/A | 60-85 sessions (~200K tokens each) | - |
+| **Total Duration** | 1440-1920 hrs | 720-1000 hrs | **40-48%** |
+| **Token Budget** | N/A | 11.8-16.7M tokens | - |
+| **Human Active Time** | 1440-1920 hrs | 720-1000 hrs | **35-40%** |
+| **Sessions Required** | N/A | 59-84 sessions (~200K tokens each) | - |
+
+**Per-PR Breakdown:**
+- **PR #1:** 720-960 hrs (human-only) → 360-480 hrs (AI-assisted), 6-8M tokens
+- **PR #2:** 240-320 hrs (human-only) → 140-200 hrs (AI-assisted), 1.8-3.2M tokens
+- **PR #3:** 480-640 hrs (human-only) → 220-320 hrs (AI-assisted), 4-5.5M tokens
 
 **Planning Examples:**
-- **10 hrs/week:** Human-only = 144-192 weeks (2.8-3.7 years), AI-assisted = 74-100 weeks (1.4-1.9 years)
-- **20 hrs/week:** Human-only = 72-96 weeks (1.4-1.8 years), AI-assisted = 37-50 weeks (9-12 months)
-- **40 hrs/week:** Human-only = 36-48 weeks (9-12 months), AI-assisted = 18.5-25 weeks (4-6 months)
+- **10 hrs/week:** Human-only = 144-192 weeks (2.8-3.7 years), AI-assisted = 72-100 weeks (1.4-1.9 years)
+- **20 hrs/week:** Human-only = 72-96 weeks (1.4-1.8 years), AI-assisted = 36-50 weeks (9-12 months)
+- **40 hrs/week:** Human-only = 36-48 weeks (9-12 months), AI-assisted = 18-25 weeks (4-6 months)
 - **Full-time sprint (60 hrs/week):** Human-only = 24-32 weeks (6-8 months), AI-assisted = 12-17 weeks (3-4 months)
 
 ### Detailed Token Breakdown by Activity
 
-#### Phase 1: Spicy HTTP Grammar (2-3M tokens)
+#### PR #1, Phase 1: Spicy HTTP Grammar (2-3M tokens)
 
 **Grammar Generation (800K-1M tokens)**
 - Initial HTTP grammar structure: 50K tokens
@@ -2509,7 +2595,7 @@ AI-assisted development estimates consider:
 - Zeek API reference lookups: 150K tokens
 - Spicy documentation consultation: 150K tokens
 
-#### Phase 2: Feature Parity (3-4M tokens)
+#### PR #1, Phase 2: Feature Parity (3-4M tokens)
 
 **Test-Driven Development (1.5-2M tokens)**
 - Running and analyzing 45+ test failures: 500K tokens
@@ -2527,7 +2613,7 @@ AI-assisted development estimates consider:
 - Re-reading modified code: 400K tokens
 - Updating documentation: 300K tokens
 
-#### Phase 2.5: Performance Optimization (1-2M tokens)
+#### PR #2, Phase 2: Performance Optimization (1-2M tokens)
 
 **C++ Plugin Development (600K-800K tokens)**
 - Decompression plugin design: 150K tokens
@@ -2545,7 +2631,7 @@ AI-assisted development estimates consider:
 - Performance test analysis: 200K tokens
 - Optimization recommendations: 200K tokens
 
-#### MCP Phase 1: SSE Parser (800K-1.2M tokens)
+#### PR #2, Phase 1: SSE Parser (800K-1.2M tokens)
 
 **SSE Grammar (400K-500K tokens)**
 - SSE event parsing: 150K tokens
@@ -2562,7 +2648,7 @@ AI-assisted development estimates consider:
 - SSE RFC consultation: 100K tokens
 - MCP transport spec review: 100K tokens
 
-#### MCP Phase 2: JSON-RPC Parser (1.5-2M tokens)
+#### PR #3, Phase 1: MCP Protocol Analyzer (1.5-2M tokens)
 
 **Zeek Script Implementation (800K-1M tokens)**
 - JSON-RPC message parsing: 200K tokens
@@ -2579,7 +2665,7 @@ AI-assisted development estimates consider:
 - Test MCP conversations: 200K tokens
 - Edge case handling: 200K tokens
 
-#### MCP Phase 3: Detection & Correlation (1-1.5M tokens)
+#### PR #3, Phase 2: MCP Detection & Correlation (1-1.5M tokens)
 
 **Heuristics Implementation (500K-700K tokens)**
 - MCP endpoint detection: 150K tokens
@@ -2592,7 +2678,7 @@ AI-assisted development estimates consider:
 - False positive analysis: 200K tokens
 - Documentation: 200K tokens
 
-#### MCP Phase 4: Advanced Features (1.5-2M tokens)
+#### PR #3, Phase 3: Advanced Features (1.5-2M tokens)
 
 **Security Features (700K-1M tokens)**
 - Tool invocation tracking: 250K tokens
