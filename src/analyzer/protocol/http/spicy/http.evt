@@ -10,20 +10,12 @@ import HTTP;
 
 # Map HTTP request line to http_request event
 # Event signature: event http_request(c: connection, method: string, original_URI: string, unescaped_URI: string, version: string);
-on HTTP::RequestLine::has_version -> event http_request(
+on HTTP::RequestLine -> event http_request(
     $conn,
     self.method,
     self.uri,
     self.uri,  # TODO: Implement URI unescaping
-    "%d.%d" % (self.has_version.version.major, self.has_version.version.minor)
-);
-
-on HTTP::RequestLine::no_version -> event http_request(
-    $conn,
-    self.method,
-    self.uri,
-    self.uri,  # TODO: Implement URI unescaping
-    "0.9"
+    self.version_string
 );
 
 # Map HTTP reply line to http_reply event

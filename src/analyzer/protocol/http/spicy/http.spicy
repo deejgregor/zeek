@@ -6,7 +6,7 @@
 module HTTP;
 
 import spicy;
-import zeek;
+# import zeek;  # Only available when building with Zeek
 
 # Common patterns
 const Token      = /[^ \t\r\n]+/;
@@ -34,14 +34,24 @@ public type RequestLine = unit {
 
     # Optional whitespace and version (HTTP/1.x)
     # For HTTP/0.9, the line ends after URI
-    # We'll use a switch to handle both cases
-    switch {
-        -> has_version: WhiteSpace Version NewLine;
-        -> no_version:  NewLine;
-    };
+    # We'll parse the rest as bytes and check for version
+    rest: bytes &until=b"\n";
+
+    var version_string: string = "0.9";
+    var has_version: bool = False;
+
+    on rest {
+        # Check if rest contains "HTTP/" to determine if version is present
+        local found = self.rest.find(b"HTTP/");
+        if ( found[0] ) {  # found is tuple<bool, iterator>, use first element
+            self.has_version = True;
+            # TODO: Parse actual version number from self.rest
+            self.version_string = "1.1";  # Temporary default
+        }
+    }
 
     on %done {
-        print "HTTP Request:", self.method, self.uri;
+        print "HTTP Request:", self.method, self.uri, "version:", self.version_string;
     }
 };
 
@@ -60,29 +70,24 @@ public type ReplyLine = unit {
 };
 
 # HTTP header: Name: Value
-type Header = unit {
-    name:  /[^:\r\n]+/;
-    :      /:/;
-    :      OptWS;
-    value: /[^\r\n]*/;
-    :      NewLine;
-
-    on %done {
-        print "HTTP Header:", self.name, "=", self.value;
-    }
-};
-
-# Collection of headers (until blank line)
-type Headers = unit {
-    # Parse headers until we see a line that's just newline
-    :       Header[] &until(self.at_end);
-    :       NewLine;  # The blank line ending headers
-
-    var at_end: bool = False;
-
-    # TODO: Detect blank line properly
-    # For now, this is a placeholder
-};
+# Commented out for now - will re-enable after basic parsing works
+# type Header = unit {
+#     name:  /[^:\r\n]+/;
+#     :      /:/;
+#     :      OptWS;
+#     value: /[^\r\n]*/;
+#     :      NewLine;
+#
+#     on %done {
+#         print "HTTP Header:", self.name, "=", self.value;
+#     }
+# };
+#
+# # Collection of headers (until blank line)
+# type Headers = unit {
+#     # TODO: Implement proper blank line detection
+#     # headers: Header[];
+# };
 
 # HTTP request message
 public type Request = unit {
