@@ -1,7 +1,7 @@
 # Zeek MCP Protocol Support: Specification and Implementation Plan
 
-**Version:** 1.4
-**Date:** November 26, 2025
+**Version:** 1.5
+**Date:** November 29, 2025
 **Author:** Zeek Development Team
 **Document Type:** Planning Document for Zeek MCP Integration
 
@@ -15,17 +15,20 @@
 4. [MCP Protocol Overview](#mcp-protocol-overview)
 5. [Gap Analysis](#gap-analysis)
 6. [Proposed Zeek Log Format for MCP](#proposed-zeek-log-format-for-mcp)
-7. [HTTP to Spicy Migration Plan](#http-to-spicy-migration-plan)
-8. [MCP Protocol Implementation Plan](#mcp-protocol-implementation-plan)
-9. [Testing Strategy](#testing-strategy)
-10. [Timeline and Milestones](#timeline-and-milestones)
-11. [AI-Assisted Development Estimates](#ai-assisted-development-estimates)
-12. [References](#references)
+7. [Pull Request Structure](#pull-request-structure)
+8. [PR #1: HTTP to Spicy Migration](#pr-1-http-to-spicy-migration)
+9. [PR #2: Enhanced HTTP/SSE Support](#pr-2-enhanced-httpsse-support)
+10. [PR #3: MCP Protocol Implementation](#pr-3-mcp-protocol-implementation)
+11. [Testing Strategy](#testing-strategy)
+12. [Timeline and Milestones](#timeline-and-milestones)
+13. [AI-Assisted Development Estimates](#ai-assisted-development-estimates)
+14. [References](#references)
 
 ---
 
 ## Version History
 
+- **v1.5** (2025-11-29): Reorganized implementation into 3 separate PRs: (1) HTTP C++→Spicy migration, (2) Enhanced HTTP/SSE features, (3) MCP protocol. This allows incremental review and reduces risk.
 - **v1.4** (2025-11-26): Converted time estimates from weeks to hours for flexible scheduling, added planning examples for different weekly hour commitments (10/20/40/60 hrs/week)
 - **v1.3** (2025-11-26): Added AI-assisted development estimates including token budgets, human time, wall clock time, detailed breakdowns, session planning, and cost analysis
 - **v1.2** (2025-11-26): Updated terminology from "B&I proxies" to "TLSI/TLS termination" to cover broader deployment scenarios
@@ -981,7 +984,39 @@ else if ( c$mcp_state?$current_stream_id &&
 
 ---
 
-## HTTP to Spicy Migration Plan
+## Pull Request Structure
+
+To manage complexity and enable incremental review, this work is divided into **three separate pull requests**:
+
+### PR #1: HTTP C++ → Spicy Migration
+**Scope:** Replace existing C++ HTTP analyzer with Spicy-based implementation
+**Goal:** Feature parity with current HTTP analyzer, all existing tests passing
+**Dependencies:** None
+**Reviewability:** Moderate (core HTTP functionality, well-tested)
+
+### PR #2: Enhanced HTTP/SSE Support
+**Scope:** Add Server-Sent Events (SSE) parsing and performance optimizations for high-volume scenarios
+**Goal:** Enable HTTP streaming features and optimize for TLSI/TLS termination deployments
+**Dependencies:** PR #1 (builds on Spicy HTTP)
+**Reviewability:** High (new features, targeted optimizations)
+
+### PR #3: MCP Protocol Implementation
+**Scope:** Add MCP protocol analyzer, JSON-RPC parsing, and mcp.log generation
+**Goal:** Full MCP monitoring capability
+**Dependencies:** PR #1 and #2 (requires Spicy HTTP + SSE support)
+**Reviewability:** High (new analyzer, isolated from core HTTP)
+
+**Benefits of This Approach:**
+- **Reduced Risk:** Each PR is independently testable and can be merged/reverted separately
+- **Easier Review:** Smaller changesets are easier to understand and verify
+- **Parallel Work:** PR #2 and #3 planning can overlap with PR #1 implementation
+- **Incremental Value:** PR #1 provides immediate benefits (modern HTTP analyzer) even before MCP support
+
+---
+
+## PR #1: HTTP to Spicy Migration
+
+**Objective:** Replace C++ HTTP analyzer with Spicy-based implementation while maintaining 100% feature parity
 
 ### Phase 1: Spicy HTTP Grammar Development
 
