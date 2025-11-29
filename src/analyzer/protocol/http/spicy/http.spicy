@@ -1,139 +1,117 @@
 # See the file "COPYING" in the main distribution directory for copyright.
 #
 # Spicy-based HTTP protocol analyzer
-# This is a work-in-progress migration from the C++ HTTP analyzer
+# This is a minimal initial implementation for testing
 
 module HTTP;
 
 import spicy;
 import zeek;
 
-# HTTP version parsing
+# Common patterns
+const Token      = /[^ \t\r\n]+/;
+const WhiteSpace = /[ \t]+/;
+const NewLine    = /\r?\n/;
+const OptWS      = /[ \t]*/;
+
+# HTTP version: HTTP/x.y
 type Version = unit {
     : /HTTP\//;
     major: /[0-9]+/ &convert=$$.to_uint();
     : /\./;
     minor: /[0-9]+/ &convert=$$.to_uint();
 
-    var version_string: string;
+    on %done {
+        # Store version as string for event
+    }
+};
+
+# HTTP request line: METHOD URI HTTP/VERSION or METHOD URI (for HTTP/0.9)
+public type RequestLine = unit {
+    method:  Token;
+    :        WhiteSpace;
+    uri:     Token;
+
+    # Optional whitespace and version (HTTP/1.x)
+    # For HTTP/0.9, the line ends after URI
+    # We'll use a switch to handle both cases
+    switch {
+        -> has_version: WhiteSpace Version NewLine;
+        -> no_version:  NewLine;
+    };
 
     on %done {
-        self.version_string = "%d.%d" % (self.major, self.minor);
+        print "HTTP Request:", self.method, self.uri;
     }
 };
 
-# HTTP request line: METHOD URI [VERSION]
-# HTTP/0.9 has no version, HTTP/1.x includes "HTTP/x.y"
-public type RequestLine = unit {
-    # Method token (e.g., GET, POST, PUT, etc.)
-    method: /[^ \t\r\n]+/;
-    : /[ \t]+/;
-
-    # URI (original, with potential percent-encoding)
-    uri: /[^ \t\r\n]+/;
-
-    # Rest of line - either " HTTP/x.y\r?\n" or just "\r?\n" for HTTP/0.9
-    rest_of_line: bytes &until=b"\n";
-
-    var version_string: string = "0.9";
-    var has_version: bool = False;
-
-    on rest_of_line {
-        # Parse the rest of line to extract version if present
-        local rest = self.rest_of_line;
-
-        # Check if it starts with whitespace + "HTTP/"
-        # For simplicity, just check if line contains "HTTP/"
-        if ( rest.find(b"HTTP/") )
-            self.has_version = True;
-
-        # TODO: Actually parse the version from rest_of_line
-        # For now, just assume HTTP/1.1 if version present
-        if ( self.has_version )
-            self.version_string = "1.1";
-    }
-};
-
-# HTTP reply/response line: VERSION CODE REASON
+# HTTP response/reply line: HTTP/VERSION CODE REASON
 public type ReplyLine = unit {
     version: Version;
-    : /[ \t]+/;
+    :        WhiteSpace;
+    code:    /[0-9]{3}/ &convert=$$.to_uint();
+    :        WhiteSpace;
+    reason:  /[^\r\n]*/;
+    :        NewLine;
 
-    # Status code (3 digits)
-    code: /[0-9]{3}/ &convert=$$.to_uint();
-    : /[ \t]+/;
-
-    # Reason phrase (rest of line)
-    reason: /[^\r\n]*/;
-    : /\r?\n/;
+    on %done {
+        print "HTTP Reply:", self.code, self.reason;
+    }
 };
 
-# HTTP header field
+# HTTP header: Name: Value
 type Header = unit {
-    # Header name (token up to colon)
-    name: /[^:\r\n]+/;
-    : /:/;
-    : /[ \t]*/;  # Optional whitespace after colon
-
-    # Header value (rest of line, may span multiple lines with folding)
+    name:  /[^:\r\n]+/;
+    :      /:/;
+    :      OptWS;
     value: /[^\r\n]*/;
-    : /\r?\n/;
+    :      NewLine;
 
-    # TODO: Handle header folding (continuation lines starting with space/tab)
+    on %done {
+        print "HTTP Header:", self.name, "=", self.value;
+    }
 };
 
-# Collection of headers - parse until we hit a blank line
+# Collection of headers (until blank line)
 type Headers = unit {
-    headers: Header[] &until(self.done);
-    : /\r?\n/;  # Empty line marks end of headers
+    # Parse headers until we see a line that's just newline
+    :       Header[] &until(self.at_end);
+    :       NewLine;  # The blank line ending headers
 
-    var done: bool = False;
+    var at_end: bool = False;
 
-    # Note: This is simplified - proper implementation would check for
-    # blank line (\r\n\r\n or \n\n) during parsing
+    # TODO: Detect blank line properly
+    # For now, this is a placeholder
 };
 
-# HTTP message body
-# This is simplified - real implementation needs to handle:
-# - Content-Length
-# - Transfer-Encoding: chunked
-# - Connection: close (read until EOF)
-type Body = unit {
-    # TODO: Implement body parsing based on headers
-    # For now, just capture as bytes
-    data: bytes &eod;
-};
-
-# Complete HTTP request
+# HTTP request message
 public type Request = unit {
-    request_line: RequestLine;
-    headers: Headers;
-    # body: Body;  # TODO: Add conditional body parsing
+    request: RequestLine;
+    # headers:  Headers;  # TODO: Add headers back
+    # Body parsing will come later
 
     on %done {
-        # Accept this as valid HTTP input
         spicy::accept_input();
     }
 };
 
-# Complete HTTP reply/response
+# HTTP response message
 public type Reply = unit {
-    reply_line: ReplyLine;
-    headers: Headers;
-    # body: Body;  # TODO: Add conditional body parsing
+    reply: ReplyLine;
+    # headers: Headers;  # TODO: Add headers back
+    # Body parsing will come later
 
     on %done {
-        # Accept this as valid HTTP input
         spicy::accept_input();
     }
 };
 
-# Top-level unit for parsing HTTP requests (from client)
+# Stream of HTTP requests (client->server)
 public type Requests = unit {
     : Request[];
 };
 
-# Top-level unit for parsing HTTP replies (from server)
+# Stream of HTTP replies (server->client)
 public type Replies = unit {
     : Reply[];
 };
