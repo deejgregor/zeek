@@ -1,0 +1,133 @@
+# See the file "COPYING" in the main distribution directory for copyright.
+#
+# Spicy-based HTTP protocol analyzer
+# This is a work-in-progress migration from the C++ HTTP analyzer
+
+module HTTP;
+
+import spicy;
+import zeek;
+
+# HTTP version parsing
+type Version = unit {
+    : /HTTP\//;
+    major: /[0-9]+/ &convert=$$.to_uint();
+    : /\./;
+    minor: /[0-9]+/ &convert=$$.to_uint();
+
+    var version_string: string;
+
+    on %done {
+        self.version_string = "%d.%d" % (self.major, self.minor);
+    }
+};
+
+# HTTP request line: METHOD URI VERSION
+public type RequestLine = unit {
+    # Method token (e.g., GET, POST, PUT, etc.)
+    method: /[!-~&&[^ \t]]+/;
+    : /[ \t]+/;
+
+    # URI (original, with potential percent-encoding)
+    uri: /[^ \t\r\n]+/;
+
+    # Optional version (HTTP/0.9 doesn't include version)
+    : /[ \t]+/ &requires=self.has_version;
+    version: Version if (self.has_version);
+
+    : /\r?\n/;
+
+    var has_version: bool = False;
+    var version_major: uint64 = 0;
+    var version_minor: uint64 = 9;  # Default to 0.9
+
+    on %init {
+        # Check if we have HTTP/ ahead to determine version presence
+        # This is a simplification - in practice we'd need lookahead
+        self.has_version = True;
+    }
+
+    on version {
+        self.version_major = self.version.major;
+        self.version_minor = self.version.minor;
+    }
+};
+
+# HTTP reply/response line: VERSION CODE REASON
+public type ReplyLine = unit {
+    version: Version;
+    : /[ \t]+/;
+
+    # Status code (3 digits)
+    code: /[0-9]{3}/ &convert=$$.to_uint();
+    : /[ \t]+/;
+
+    # Reason phrase (rest of line)
+    reason: /[^\r\n]*/;
+    : /\r?\n/;
+};
+
+# HTTP header field
+type Header = unit {
+    # Header name (token up to colon)
+    name: /[^:\r\n]+/;
+    : /:/;
+    : /[ \t]*/;  # Optional whitespace after colon
+
+    # Header value (rest of line, may span multiple lines with folding)
+    value: /[^\r\n]*/;
+    : /\r?\n/;
+
+    # TODO: Handle header folding (continuation lines starting with space/tab)
+};
+
+# Collection of headers
+type Headers = unit {
+    headers: Header[];
+    : /\r?\n/;  # Empty line marks end of headers
+} &until($input.find(b"\r\n\r\n") || $input.find(b"\n\n"));
+
+# HTTP message body
+# This is simplified - real implementation needs to handle:
+# - Content-Length
+# - Transfer-Encoding: chunked
+# - Connection: close (read until EOF)
+type Body = unit {
+    # TODO: Implement body parsing based on headers
+    # For now, just capture as bytes
+    data: bytes &eod;
+};
+
+# Complete HTTP request
+public type Request = unit {
+    request_line: RequestLine;
+    headers: Headers;
+    # body: Body;  # TODO: Add conditional body parsing
+
+    on %done {
+        # Accept this as valid HTTP input
+        spicy::accept_input();
+    }
+};
+
+# Complete HTTP reply/response
+public type Reply = unit {
+    reply_line: ReplyLine;
+    headers: Headers;
+    # body: Body;  # TODO: Add conditional body parsing
+
+    on %done {
+        # Accept this as valid HTTP input
+        spicy::accept_input();
+    }
+};
+
+# Top-level unit for parsing HTTP requests (from client)
+public type Requests = unit {
+    : Request[];
+};
+
+# Top-level unit for parsing HTTP replies (from server)
+public type Replies = unit {
+    : Reply[];
+};

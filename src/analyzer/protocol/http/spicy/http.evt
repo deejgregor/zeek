@@ -1,0 +1,49 @@
+# See the file "COPYING" in the main distribution directory for copyright.
+#
+# Event definitions for Spicy-based HTTP analyzer
+
+protocol analyzer spicy::HTTP over TCP:
+    parse originator with HTTP::Requests,
+    parse responder with HTTP::Replies;
+
+import HTTP;
+
+# Map HTTP request line to http_request event
+# Event signature: event http_request(c: connection, method: string, original_URI: string, unescaped_URI: string, version: string);
+on HTTP::RequestLine -> event http_request(
+    $conn,
+    self.method,
+    self.uri,
+    self.uri,  # TODO: Implement URI unescaping
+    self.version ? self.version.version_string : "0.9"
+);
+
+# Map HTTP reply line to http_reply event
+# Event signature: event http_reply(c: connection, version: string, code: count, reason: string);
+on HTTP::ReplyLine -> event http_reply(
+    $conn,
+    self.version.version_string,
+    self.code,
+    self.reason
+);
+
+# Map HTTP headers to http_header event
+# Event signature: event http_header(c: connection, is_orig: bool, original_name: string, name: string, value: string);
+on HTTP::Header -> event http_header(
+    $conn,
+    $is_orig,
+    self.name,
+    self.name,  # TODO: Convert to uppercase
+    self.value
+);
+
+# TODO: Add remaining events:
+# - http_all_headers
+# - http_begin_entity
+# - http_end_entity
+# - http_entity_data
+# - http_content_type
+# - http_message_done
+# - http_event (for errors/weirds)
+# - http_stats
+# - http_connection_upgrade
